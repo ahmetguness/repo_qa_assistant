@@ -1,0 +1,6 @@
+.env
+.repo_cache/
+__pycache__/
+*.pyc
+*.pyo
+a.txt
