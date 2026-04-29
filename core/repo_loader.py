@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -172,22 +173,31 @@ def get_language_stats(files: list[dict]) -> dict[str, int]:
 
 
 def find_file(files: list[dict], query: str) -> dict | None:
-    """Dosya adına göre arama yapar. Tam eşleşme veya kısmi eşleşme."""
+    """Dosya adına göre arama yapar. Tam eşleşme, kısmi eşleşme ve fuzzy."""
     query_lower = query.lower().replace("\\", "/")
+    # Normalize: tire, alt çizgi, boşluk hepsini aynı kabul et
+    query_norm = re.sub(r"[-_ ]+", "-", query_lower)
 
-    # Tam eşleşme
+    # 1. Tam yol eşleşmesi
     for f in files:
         if f["path"].lower().replace("\\", "/") == query_lower:
             return f
 
-    # Dosya adı eşleşmesi
+    # 2. Dosya adı eşleşmesi
     for f in files:
         if Path(f["path"]).name.lower() == Path(query_lower).name.lower():
             return f
 
-    # Kısmi eşleşme
+    # 3. Normalize edilmiş eşleşme (test-results ≈ test_results ≈ test results)
     for f in files:
-        if query_lower in f["path"].lower().replace("\\", "/"):
+        fname_norm = re.sub(r"[-_ ]+", "-", Path(f["path"]).stem.lower())
+        if fname_norm == query_norm or query_norm in fname_norm:
+            return f
+
+    # 4. Kısmi yol eşleşmesi
+    for f in files:
+        path_norm = re.sub(r"[-_ ]+", "-", f["path"].lower().replace("\\", "/"))
+        if query_norm in path_norm:
             return f
 
     return None

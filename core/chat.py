@@ -43,23 +43,98 @@ def get_model(complexity: str) -> str:
 
 
 def detect_file_reference(question: str) -> str | None:
-    """Soruda dosya referansı varsa dosya yolunu döndürür."""
-    patterns = [
-        r"['\"`]([^'\"` ]+\.\w{1,5})['\"`]",
-        r"(\S+\.\w{1,5})\s+(dosya|file)",
-        r"(dosya|file)\s+(\S+\.\w{1,5})",
-        r"(\S+/\S+\.\w{1,5})",
+    """Soruda dosya referansı varsa dosya yolunu döndürür.
+
+    Handles:
+    - Quoted: 'test.py', "app.js", `main.go`
+    - With extension: test-results.md dosyası, app.py file
+    - Path-like: src/main.py, core/utils.ts
+    - Natural language: "test results dosyasına bak" → test-results
+    """
+    q = question.strip()
+
+    # 1. Quoted file names
+    m = re.search(r"['\"`]([^'\"` ]+\.\w{1,5})['\"`]", q)
+    if m:
+        return m.group(1)
+
+    # 2. Explicit file with extension
+    m = re.search(r"(\S+\.\w{1,5})\s+(dosya|file|içeriğ|açıkla)", q, re.IGNORECASE)
+    if m and not m.group(1).startswith("http"):
+        return m.group(1)
+
+    m = re.search(r"(dosya|file)\s+(\S+\.\w{1,5})", q, re.IGNORECASE)
+    if m and not m.group(2).startswith("http"):
+        return m.group(2)
+
+    # 3. Path-like references
+    m = re.search(r"(\S+/\S+\.\w{1,5})", q)
+    if m and not m.group(1).startswith("http"):
+        return m.group(1)
+
+    # 4. Natural language: "test results dosyasına bak" → search for "test-results" or "test_results"
+    nl_patterns = [
+        r"(\w[\w\s-]{1,30})\s+dosya(?:sın|ların|ya|sı|lar)?",
+        r"(\w[\w\s-]{1,30})\s+file",
+        r"(?:bak|aç|göster|oku|incele)\s+(\w[\w\s-]{1,30}?)(?:\s|$)",
     ]
-    for pat in patterns:
-        match = re.search(pat, question)
-        if match:
-            # En uzun grubu al (dosya yolu olma ihtimali yüksek)
-            groups = [g for g in match.groups() if g and "." in g and "/" in g or g.count(".") == 1]
-            if groups:
-                candidate = max(groups, key=len)
-                if not candidate.startswith("http"):
-                    return candidate
+    for pat in nl_patterns:
+        m = re.search(pat, q, re.IGNORECASE)
+        if m:
+            name = (m.group(1) if m.group(1) else m.group(2) if m.lastindex and m.lastindex >= 2 else "").strip()
+            if name and len(name) > 2:
+                # Convert "test results" → "test-results" for matching
+                return name.replace(" ", "-")
+
     return None
+
+
+def detect_file_references(question: str) -> list[str]:
+    """Soruda birden fazla dosya referansı varsa hepsini döndürür."""
+    refs = []
+    q = question.strip()
+
+    # Quoted file names (all of them)
+    for m in re.finditer(r"['\"`]([^'\"` ]+\.\w{1,5})['\"`]", q):
+        refs.append(m.group(1))
+
+    # Files with extension
+    for m in re.finditer(r"(?<!\w)(\S+\.\w{1,5})(?:\s|$|,|;)", q):
+        candidate = m.group(1)
+        if not candidate.startswith("http") and candidate not in refs:
+            refs.append(candidate)
+
+    # Path-like
+    for m in re.finditer(r"(\S+/\S+\.\w{1,5})", q):
+        candidate = m.group(1)
+        if not candidate.startswith("http") and candidate not in refs:
+            refs.append(candidate)
+
+    # Natural language fallback (only if nothing found yet)
+    if not refs:
+        ref = detect_file_reference(question)
+        if ref:
+            refs.append(ref)
+
+    return refs
+
+
+def detect_error_trace(question: str) -> list[str]:
+    """Soruda hata mesajı / stack trace varsa ilgili dosya yollarını çıkarır."""
+    paths = []
+    # Python traceback: File "src/main.py", line 42
+    for m in re.finditer(r'File "([^"]+)"', question):
+        paths.append(m.group(1))
+    # Generic: at src/main.py:42 or src/main.py line 42
+    for m in re.finditer(r"(?:at |in )(\S+\.\w{1,5})(?::\d+| line \d+)", question):
+        paths.append(m.group(1))
+    # Java/JS: at com.example.Main(Main.java:42)
+    for m in re.finditer(r"\((\S+\.\w{1,5}):\d+\)", question):
+        paths.append(m.group(1))
+    # Node: /src/index.js:15:3
+    for m in re.finditer(r"(/?\S+\.\w{1,5}):\d+:\d+", question):
+        paths.append(m.group(1))
+    return list(dict.fromkeys(paths))  # deduplicate, preserve order
 
 
 def summarize_conversation(client: OpenAI, messages: list[dict]) -> str:

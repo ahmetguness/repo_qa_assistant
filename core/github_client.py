@@ -1,6 +1,8 @@
 """GitHub API entegrasyonu: PR, issue, branch bilgilerini çeker."""
 
 import re
+import time
+from functools import lru_cache
 from github import Github, GithubException
 
 
@@ -10,8 +12,27 @@ def extract_owner_repo(repo_url: str) -> str | None:
     return match.group(1) if match else None
 
 
+# GitHub client'ı cache'le — aynı token için tekrar oluşturma
+_gh_cache: dict[str, Github] = {}
+
+
 def _get_gh(token: str | None = None) -> Github:
-    return Github(token) if token else Github()
+    key = token or "__no_token__"
+    if key not in _gh_cache:
+        _gh_cache[key] = Github(token, retry=0) if token else Github(retry=0)
+    return _gh_cache[key]
+
+
+def _handle_rate_limit(e: Exception) -> str:
+    """Rate limit hatasını kullanıcı dostu mesaja çevirir."""
+    msg = str(e)
+    if "rate limit" in msg.lower() or "403" in msg:
+        return (
+            "[GitHub API rate limit aşıldı. "
+            "Token olmadan saatte 60 istek yapılabilir. "
+            ".env dosyasına GITHUB_TOKEN ekleyerek limiti 5000'e çıkarabilirsiniz.]\n"
+        )
+    return f"[Hata: {msg}]\n"
 
 
 def fetch_pull_requests(repo_url: str, token: str | None = None) -> str:
@@ -55,14 +76,13 @@ def fetch_pull_requests(repo_url: str, token: str | None = None) -> str:
 
         return "\n".join(lines)
     except GithubException as e:
-        msg = e.data.get("message", str(e)) if hasattr(e, "data") and isinstance(e.data, dict) else str(e)
-        return f"[PR bilgisi alınamadı: {msg}]\n"
+        return _handle_rate_limit(e)
     except Exception as e:
-        return f"[PR bilgisi alınamadı: {e}]\n"
+        return _handle_rate_limit(e)
 
 
 def fetch_pr_diff(repo_url: str, pr_number: int, token: str | None = None) -> str:
-    """Belirli bir PR'ın diff bilgisini çeker."""
+    """Belirli bir PR'ın diff bilgisini ve dosya içeriklerini çeker."""
     slug = extract_owner_repo(repo_url)
     if not slug:
         return ""
@@ -73,19 +93,90 @@ def fetch_pr_diff(repo_url: str, pr_number: int, token: str | None = None) -> st
         files = list(pr.get_files())
 
         lines = [f"### PR #{pr_number} Diff: {pr.title}"]
-        lines.append(f"Değişen dosya sayısı: {len(files)}, +{pr.additions} -{pr.deletions}\n")
+        lines.append(f"Branch: `{pr.head.ref}` → `{pr.base.ref}`")
+        lines.append(f"Değişen dosya sayısı: {len(files)}, +{pr.additions} -{pr.deletions}")
+        lines.append(f"Dosyalar: {', '.join(f.filename for f in files)}\n")
 
-        for f in files[:20]:  # max 20 dosya
-            lines.append(f"**{f.filename}** (+{f.additions} -{f.deletions})")
+        for f in files[:20]:
+            lines.append(f"**{f.filename}** ({f.status}) +{f.additions} -{f.deletions}")
+
+            # Dosyanın tam içeriğini PR branch'inden çek
+            try:
+                if f.status != "removed":
+                    content_file = repo.get_contents(f.filename, ref=pr.head.sha)
+                    if hasattr(content_file, "decoded_content"):
+                        content = content_file.decoded_content.decode("utf-8", errors="ignore")
+                        if len(content) < 8000:
+                            lines.append(f"\nTam dosya içeriği ({f.filename}):")
+                            lines.append(f"```\n{content}\n```")
+                        else:
+                            lines.append(f"\n[Dosya çok büyük ({len(content)} karakter), sadece diff gösteriliyor]")
+            except Exception:
+                pass
+
+            # Diff/patch
             if f.patch and len(f.patch) < 3000:
+                lines.append(f"\nDiff:")
                 lines.append(f"```diff\n{f.patch}\n```")
             elif f.patch:
-                lines.append(f"```diff\n{f.patch[:3000]}\n[...kırpıldı]\n```")
+                lines.append(f"\nDiff (kırpılmış):")
+                lines.append(f"```diff\n{f.patch[:3000]}\n[...]\n```")
+
             lines.append("")
 
         return "\n".join(lines)
     except Exception as e:
-        return f"[PR diff alınamadı: {e}]\n"
+        return _handle_rate_limit(e)
+
+
+def fetch_pr_reviews(repo_url: str, pr_number: int, token: str | None = None) -> str:
+    """PR review yorumlarını ve tartışmalarını çeker."""
+    slug = extract_owner_repo(repo_url)
+    if not slug:
+        return ""
+
+    try:
+        repo = _get_gh(token).get_repo(slug)
+        pr = repo.get_pull(pr_number)
+
+        lines = []
+
+        # Review'lar (approve, request changes, comment)
+        reviews = list(pr.get_reviews()[:20])
+        if reviews:
+            lines.append(f"### PR #{pr_number} Reviews")
+            for r in reviews:
+                state = r.state.replace("_", " ").title()
+                user = r.user.login if r.user else "?"
+                body = (r.body or "").strip()
+                if body:
+                    lines.append(f"- **{user}** [{state}]: {body[:300]}")
+                else:
+                    lines.append(f"- **{user}** [{state}]")
+
+        # Review comment'leri (satır bazlı yorumlar)
+        comments = list(pr.get_review_comments()[:30])
+        if comments:
+            lines.append(f"\n### Satır Bazlı Yorumlar")
+            for c in comments:
+                user = c.user.login if c.user else "?"
+                path = c.path or "?"
+                line = c.original_line or c.line or "?"
+                body = (c.body or "").strip()[:200]
+                lines.append(f"- **{user}** `{path}:{line}`: {body}")
+
+        # Issue comment'leri (genel tartışma)
+        issue_comments = list(pr.get_issue_comments()[:15])
+        if issue_comments:
+            lines.append(f"\n### Genel Tartışma")
+            for c in issue_comments:
+                user = c.user.login if c.user else "?"
+                body = (c.body or "").strip()[:300]
+                lines.append(f"- **{user}**: {body}")
+
+        return "\n".join(lines) if lines else ""
+    except Exception:
+        return ""
 
 
 def fetch_issues(repo_url: str, token: str | None = None) -> str:
@@ -113,7 +204,7 @@ def fetch_issues(repo_url: str, token: str | None = None) -> str:
             )
         return "\n".join(lines)
     except Exception as e:
-        return f"[Issue bilgisi alınamadı: {e}]\n"
+        return _handle_rate_limit(e)
 
 
 def fetch_branches(repo_url: str, token: str | None = None) -> str:
@@ -136,7 +227,7 @@ def fetch_branches(repo_url: str, token: str | None = None) -> str:
             lines.append(f"- `{b.name}`{marker}")
         return "\n".join(lines)
     except Exception as e:
-        return f"[Branch bilgisi alınamadı: {e}]\n"
+        return _handle_rate_limit(e)
 
 
 def fetch_commits(repo_url: str, token: str | None = None, limit: int = 20) -> str:
@@ -168,7 +259,7 @@ def fetch_commits(repo_url: str, token: str | None = None, limit: int = 20) -> s
 
         return "\n".join(lines)
     except Exception as e:
-        return f"[Commit bilgisi alınamadı: {e}]\n"
+        return _handle_rate_limit(e)
 
 
 def fetch_repo_summary(repo_url: str, token: str | None = None) -> dict:
@@ -191,4 +282,4 @@ def fetch_repo_summary(repo_url: str, token: str | None = None) -> dict:
             "languages": languages,
         }
     except Exception:
-        return {}
+        return {}  # Rate limit veya hata durumunda boş döndür, retry yapma
