@@ -31,6 +31,7 @@ export default function Chatbot({ user }: ChatbotProps) {
   const [initialized, setInitialized] = useState(false);
   const [repoSyncing, setRepoSyncing] = useState(false);
   const [repoSyncStatus, setRepoSyncStatus] = useState("");
+  const [syncProgress, setSyncProgress] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const syncAbortRef = useRef<AbortController | null>(null);
@@ -205,13 +206,14 @@ export default function Chatbot({ user }: ChatbotProps) {
     syncAbortRef.current = controller;
     setRepoSyncing(true);
     setRepoSyncStatus("GitHub reposu klonlanıyor...");
+    setSyncProgress(0);
 
     const statusTimers = [
-      setTimeout(() => setRepoSyncStatus("Dosya ağacı alınıyor..."), 2000),
-      setTimeout(() => setRepoSyncStatus("Dosya içerikleri indiriliyor..."), 5000),
-      setTimeout(() => setRepoSyncStatus("Commit geçmişi alınıyor..."), 10000),
-      setTimeout(() => setRepoSyncStatus("PR'lar ve branch'ler alınıyor..."), 15000),
-      setTimeout(() => setRepoSyncStatus("Neredeyse hazır..."), 20000),
+      setTimeout(() => { setSyncProgress(10); setRepoSyncStatus("Dosya ağacı alınıyor..."); }, 2000),
+      setTimeout(() => { setSyncProgress(30); setRepoSyncStatus("Dosya içerikleri indiriliyor..."); }, 5000),
+      setTimeout(() => { setSyncProgress(55); setRepoSyncStatus("Commit geçmişi alınıyor..."); }, 10000),
+      setTimeout(() => { setSyncProgress(75); setRepoSyncStatus("PR'lar ve branch'ler alınıyor..."); }, 15000),
+      setTimeout(() => { setSyncProgress(90); setRepoSyncStatus("Neredeyse hazır..."); }, 20000),
     ];
 
     try {
@@ -223,16 +225,18 @@ export default function Chatbot({ user }: ChatbotProps) {
         signal: controller.signal,
       });
       if (!controller.signal.aborted) {
-        setRepoSyncStatus("Repo hazır! ✓");
-        setTimeout(() => { setRepoSyncing(false); setRepoSyncStatus(""); }, 1500);
+        setSyncProgress(100);
+        setRepoSyncStatus("Repo hazır!");
+        setTimeout(() => { setRepoSyncing(false); setRepoSyncStatus(""); setSyncProgress(0); }, 1200);
       }
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
+      setSyncProgress(0);
       setRepoSyncStatus("GitHub analiz hatası");
       setTimeout(() => { setRepoSyncing(false); setRepoSyncStatus(""); }, 2000);
     } finally {
       statusTimers.forEach(clearTimeout);
-      if (controller.signal.aborted) { setRepoSyncing(false); setRepoSyncStatus(""); }
+      if (controller.signal.aborted) { setRepoSyncing(false); setRepoSyncStatus(""); setSyncProgress(0); }
       syncAbortRef.current = null;
     }
   }
@@ -307,14 +311,29 @@ export default function Chatbot({ user }: ChatbotProps) {
     syncAbortRef.current = controller;
 
     setRepoSyncing(true);
+    setSyncProgress(0);
     setRepoSyncStatus("Repo bağlantısı kuruluyor...");
-    const statusTimers = [
-      setTimeout(() => setRepoSyncStatus("Dosya ağacı taranıyor..."), 2000),
-      setTimeout(() => setRepoSyncStatus("Dosya içerikleri indiriliyor..."), 5000),
-      setTimeout(() => setRepoSyncStatus("Commit geçmişi alınıyor..."), 10000),
-      setTimeout(() => setRepoSyncStatus("Branch'ler senkronize ediliyor..."), 14000),
-      setTimeout(() => setRepoSyncStatus("Neredeyse hazır..."), 20000),
+
+    // Smooth progress animation
+    const steps = [
+      { at: 300, progress: 5, status: "Repo bağlantısı kuruluyor..." },
+      { at: 1500, progress: 12, status: "Dosya ağacı taranıyor..." },
+      { at: 3000, progress: 25, status: "Dosya içerikleri indiriliyor..." },
+      { at: 6000, progress: 45, status: "Dosya içerikleri indiriliyor..." },
+      { at: 10000, progress: 60, status: "Commit geçmişi alınıyor..." },
+      { at: 14000, progress: 75, status: "Branch'ler senkronize ediliyor..." },
+      { at: 18000, progress: 85, status: "Neredeyse hazır..." },
+      { at: 25000, progress: 92, status: "Neredeyse hazır..." },
     ];
+
+    const timers = steps.map((s) =>
+      setTimeout(() => {
+        if (!controller.signal.aborted) {
+          setSyncProgress(s.progress);
+          setRepoSyncStatus(s.status);
+        }
+      }, s.at)
+    );
     try {
       await fetch("/api/repos/sync", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -322,16 +341,18 @@ export default function Chatbot({ user }: ChatbotProps) {
         signal: controller.signal,
       });
       if (!controller.signal.aborted) {
-        setRepoSyncStatus("Repo hazır! ✓");
-        setTimeout(() => { setRepoSyncing(false); setRepoSyncStatus(""); }, 1500);
+        setSyncProgress(100);
+        setRepoSyncStatus("Repo hazır!");
+        setTimeout(() => { setRepoSyncing(false); setRepoSyncStatus(""); setSyncProgress(0); }, 1200);
       }
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
+      setSyncProgress(0);
       setRepoSyncStatus("Senkronizasyon hatası");
       setTimeout(() => { setRepoSyncing(false); setRepoSyncStatus(""); }, 2000);
     } finally {
-      statusTimers.forEach(clearTimeout);
-      if (controller.signal.aborted) { setRepoSyncing(false); setRepoSyncStatus(""); }
+      timers.forEach(clearTimeout);
+      if (controller.signal.aborted) { setRepoSyncing(false); setRepoSyncStatus(""); setSyncProgress(0); }
       syncAbortRef.current = null;
     }
   }
@@ -656,14 +677,37 @@ export default function Chatbot({ user }: ChatbotProps) {
           {repoSyncing && (
             <div className="mx-4 mt-3 mb-1">
               <div className="max-w-3xl mx-auto">
-                <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-[var(--accent-soft)] border border-[var(--accent)]/20">
-                  <svg className="animate-spin flex-shrink-0 w-4 h-4 text-[var(--accent)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                    <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-                  </svg>
-                  <div className="min-w-0">
-                    <p className="text-[13px] font-medium text-[var(--accent)]">{effectiveRepo ?? selectedRepo} analiz ediliyor</p>
-                    <p className="text-[12px] text-[var(--accent)]/70">{repoSyncStatus}</p>
+                <div className="px-4 py-3 rounded-xl bg-[var(--accent-soft)] border border-[var(--accent)]/20">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2.5">
+                      {syncProgress < 100 ? (
+                        <svg className="animate-spin flex-shrink-0 w-3.5 h-3.5 text-[var(--accent)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                          <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                        </svg>
+                      ) : (
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--success)" strokeWidth="2.5">
+                          <path d="M20 6L9 17l-5-5" />
+                        </svg>
+                      )}
+                      <p className="text-[13px] font-medium text-[var(--accent)]">
+                        {effectiveRepo ?? selectedRepo}
+                      </p>
+                    </div>
+                    <span className="text-[11px] text-[var(--accent)]/70 tabular-nums">{syncProgress}%</span>
                   </div>
+                  {/* Progress bar */}
+                  <div className="h-1.5 rounded-full bg-[var(--bg-tertiary)] overflow-hidden">
+                    <div
+                      className="h-full rounded-full transition-all duration-700 ease-out"
+                      style={{
+                        width: `${syncProgress}%`,
+                        background: syncProgress >= 100
+                          ? "var(--success)"
+                          : "linear-gradient(90deg, var(--accent), var(--accent-hover))",
+                      }}
+                    />
+                  </div>
+                  <p className="text-[11px] text-[var(--accent)]/60 mt-1.5">{repoSyncStatus}</p>
                 </div>
               </div>
             </div>

@@ -10,11 +10,13 @@ export async function POST(request: NextRequest) {
   }
 
   const { workspace, repo } = await request.json();
-  if (!workspace || !repo) {
-    return NextResponse.json(
-      { error: "workspace and repo are required" },
-      { status: 400 }
-    );
+  if (!workspace || !repo || typeof workspace !== "string" || typeof repo !== "string") {
+    return NextResponse.json({ error: "workspace and repo are required" }, { status: 400 });
+  }
+
+  // Validate format
+  if (workspace.length > 100 || repo.length > 100) {
+    return NextResponse.json({ error: "Invalid parameters" }, { status: 400 });
   }
 
   const accessToken = await getAccessToken();

@@ -1,17 +1,33 @@
 import { NextRequest, NextResponse } from "next/server";
 import { parseGitHubUrl } from "@/lib/github";
 import { syncGitHubRepo } from "@/lib/github-indexer";
+import { checkRateLimit } from "@/lib/rate-limit";
 
 export async function POST(request: NextRequest) {
   const { url } = await request.json();
 
-  if (!url || typeof url !== "string") {
+  // Rate limit by IP (no auth required for GitHub)
+  const ip = request.headers.get("x-forwarded-for")?.split(",")[0] ?? "anonymous";
+  const rl = checkRateLimit(ip, "/api/github/analyze");
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: `⏳ Çok fazla istek. ${Math.ceil(rl.resetIn / 1000)} saniye bekleyin.` },
+      { status: 429 }
+    );
+  }
+
+  if (!url || typeof url !== "string" || url.length > 200) {
     return NextResponse.json({ error: "URL is required" }, { status: 400 });
   }
 
   const parsed = parseGitHubUrl(url);
   if (!parsed) {
     return NextResponse.json({ error: "Invalid GitHub URL" }, { status: 400 });
+  }
+
+  // Validate owner/repo format to prevent injection
+  if (!/^[a-zA-Z0-9_.-]+$/.test(parsed.owner) || !/^[a-zA-Z0-9_.-]+$/.test(parsed.repo)) {
+    return NextResponse.json({ error: "Invalid repository name" }, { status: 400 });
   }
 
   try {

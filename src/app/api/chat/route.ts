@@ -2,15 +2,25 @@ import { NextRequest } from "next/server";
 import OpenAI from "openai";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { checkRateLimit } from "@/lib/rate-limit";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-const MAX_HISTORY_MESSAGES = 8; // Keep last N messages to save tokens
+const MAX_HISTORY_MESSAGES = 8;
 
 export async function POST(request: NextRequest) {
   const session = await auth();
   if (!session?.user?.id) {
     return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { "Content-Type": "application/json" } });
+  }
+
+  // Rate limiting
+  const rl = checkRateLimit(session.user.id, "/api/chat");
+  if (!rl.allowed) {
+    return new Response(
+      JSON.stringify({ error: `⏳ Çok fazla istek. ${Math.ceil(rl.resetIn / 1000)} saniye bekleyin.` }),
+      { status: 429, headers: { "Content-Type": "application/json", "Retry-After": String(Math.ceil(rl.resetIn / 1000)) } }
+    );
   }
 
   if (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY.startsWith("sk-buraya")) {
@@ -20,6 +30,12 @@ export async function POST(request: NextRequest) {
   const { messages, workspaceSlug, repoSlug, sessionId, stream: wantStream, githubRepo } = await request.json();
   if (!Array.isArray(messages) || messages.length === 0) {
     return new Response(JSON.stringify({ error: "Messages required" }), { status: 400, headers: { "Content-Type": "application/json" } });
+  }
+
+  // Input validation
+  const lastMsg = messages[messages.length - 1];
+  if (lastMsg?.content && lastMsg.content.length > 10000) {
+    return new Response(JSON.stringify({ error: "Mesaj çok uzun (max 10.000 karakter)" }), { status: 400, headers: { "Content-Type": "application/json" } });
   }
 
   try {

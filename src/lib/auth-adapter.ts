@@ -1,5 +1,6 @@
 import type { Adapter, AdapterUser, AdapterAccount, AdapterSession } from "next-auth/adapters";
 import { prisma } from "@/lib/prisma";
+import { encrypt, decrypt } from "@/lib/encryption";
 
 export function CustomPrismaAdapter(): Adapter {
   return {
@@ -57,12 +58,12 @@ export function CustomPrismaAdapter(): Adapter {
           type: data.type,
           provider: data.provider,
           providerAccountId: data.providerAccountId,
-          refresh_token: data.refresh_token,
-          access_token: data.access_token,
+          refresh_token: data.refresh_token ? encrypt(data.refresh_token) : null,
+          access_token: data.access_token ? encrypt(data.access_token) : null,
           expires_at: data.expires_at,
           token_type: data.token_type,
           scope: data.scope,
-          id_token: data.id_token,
+          id_token: data.id_token ? encrypt(data.id_token) : null,
           session_state: data.session_state as string | undefined,
         },
       });

@@ -27,8 +27,16 @@ export async function POST(request: NextRequest) {
 
   const { name } = await request.json();
 
+  const folderName = (typeof name === "string" ? name.trim().slice(0, 100) : "") || "Yeni Klasör";
+
+  // Limit folders per user
+  const folderCount = await prisma.chatFolder.count({ where: { userId: session.user.id } });
+  if (folderCount >= 50) {
+    return NextResponse.json({ error: "Maksimum klasör sayısına ulaşıldı (50)" }, { status: 400 });
+  }
+
   const folder = await prisma.chatFolder.create({
-    data: { userId: session.user.id, name: name ?? "Yeni Klasör" },
+    data: { userId: session.user.id, name: folderName },
   });
 
   return NextResponse.json({ folder });

@@ -45,7 +45,12 @@ export async function PATCH(
   const { title, folderId } = await request.json();
 
   const data: Record<string, unknown> = {};
-  if (title !== undefined) data.title = title;
+  if (title !== undefined) {
+    if (typeof title !== "string" || title.length > 200) {
+      return NextResponse.json({ error: "Invalid title" }, { status: 400 });
+    }
+    data.title = title.trim().slice(0, 200);
+  }
   if (folderId !== undefined) data.folderId = folderId;
 
   await prisma.chatSession.updateMany({

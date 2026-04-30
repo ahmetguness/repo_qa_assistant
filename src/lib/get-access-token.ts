@@ -1,5 +1,6 @@
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { decrypt, encrypt } from "@/lib/encryption";
 
 export async function getAccessToken(): Promise<string | null> {
   const session = await auth();
@@ -14,9 +15,12 @@ export async function getAccessToken(): Promise<string | null> {
 
   if (!account?.access_token) return null;
 
+  const accessToken = decrypt(account.access_token);
+
   // Check if token is expired and refresh if needed
   if (account.expires_at && account.expires_at * 1000 < Date.now()) {
     if (!account.refresh_token) return null;
+    const refreshToken = decrypt(account.refresh_token);
 
     try {
       const res = await fetch("https://bitbucket.org/site/oauth2/access_token", {
@@ -29,7 +33,7 @@ export async function getAccessToken(): Promise<string | null> {
         },
         body: new URLSearchParams({
           grant_type: "refresh_token",
-          refresh_token: account.refresh_token,
+          refresh_token: refreshToken,
         }),
       });
 
@@ -40,8 +44,8 @@ export async function getAccessToken(): Promise<string | null> {
       await prisma.account.update({
         where: { id: account.id },
         data: {
-          access_token: tokens.access_token,
-          refresh_token: tokens.refresh_token ?? account.refresh_token,
+          access_token: encrypt(tokens.access_token),
+          refresh_token: tokens.refresh_token ? encrypt(tokens.refresh_token) : account.refresh_token,
           expires_at: Math.floor(Date.now() / 1000 + tokens.expires_in),
         },
       });
@@ -52,5 +56,5 @@ export async function getAccessToken(): Promise<string | null> {
     }
   }
 
-  return account.access_token;
+  return accessToken;
 }

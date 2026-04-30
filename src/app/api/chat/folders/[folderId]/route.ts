@@ -15,9 +15,13 @@ export async function PATCH(
   const { folderId } = await params;
   const { name } = await request.json();
 
+  if (!name || typeof name !== "string" || name.length > 100) {
+    return NextResponse.json({ error: "Invalid name" }, { status: 400 });
+  }
+
   await prisma.chatFolder.updateMany({
     where: { id: folderId, userId: session.user.id },
-    data: { name },
+    data: { name: name.trim().slice(0, 100) },
   });
 
   return NextResponse.json({ ok: true });
