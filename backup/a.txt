@@ -1,0 +1,338 @@
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+
+from dotenv import load_dotenv
+from github import Github, GithubException
+from openai import OpenAI
+import streamlit as st
+
+load_dotenv()
+
+st.set_page_config(page_title="Repo QA Assistant", page_icon="�", layout="centered")
+st.title("� GitHub Repo QA Assistant")
+
+api_key = os.getenv("OPENAI_API_KEY")
+
+if not api_key:
+    st.error("API anahtarı bulunamadı. Lütfen .env dosyasına OPENAI_API_KEY değerini ekleyin.")
+    st.stop()
+
+client = OpenAI(api_key=api_key)
+
+# ── Yardımcı fonksiyonlar ──────────────────────────────────────────────
+
+IGNORED_DIRS = {
+    ".git", "node_modules", "__pycache__", ".venv", "venv",
+    "dist", "build", ".next", ".nuxt", "target", "bin", "obj",
+    ".idea", ".vscode", ".kiro",
+}
+
+TEXT_EXTENSIONS = {
+    ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".c", ".cpp", ".h",
+    ".cs", ".go", ".rs", ".rb", ".php", ".swift", ".kt", ".scala",
+    ".html", ".css", ".scss", ".less", ".vue", ".svelte",
+    ".json", ".yaml", ".yml", ".toml", ".xml", ".ini", ".cfg", ".conf",
+    ".md", ".txt", ".rst", ".sh", ".bash", ".zsh", ".bat", ".ps1",
+    ".sql", ".graphql", ".proto", ".dockerfile", ".env.example",
+    ".gitignore", ".editorconfig", ".eslintrc", ".prettierrc",
+}
+
+ALWAYS_INCLUDE = {
+    "Dockerfile", "Makefile", "Procfile", "Gemfile",
+    "requirements.txt", "setup.py", "setup.cfg", "pyproject.toml",
+    "package.json", "tsconfig.json", "Cargo.toml", "go.mod",
+    "pom.xml", "build.gradle", "CMakeLists.txt",
+}
+
+MAX_FILE_SIZE = 50_000  # 50 KB per file
+MAX_TOTAL_CHARS = 300_000  # ~300K chars total context
+
+
+def clone_repo(repo_url: str) -> str:
+    """Repoyu geçici dizine klonlar, dizin yolunu döndürür."""
+    tmp_dir = tempfile.mkdtemp(prefix="repo_qa_")
+    subprocess.run(
+        ["git", "clone", "--depth", "1", repo_url, tmp_dir],
+        capture_output=True, text=True, check=True, timeout=120,
+    )
+    return tmp_dir
+
+
+def extract_owner_repo(repo_url: str) -> str | None:
+    """GitHub URL'sinden 'owner/repo' bilgisini çıkarır."""
+    match = re.match(r"https?://github\.com/([^/]+/[^/]+?)(?:\.git)?/?$", repo_url)
+    return match.group(1) if match else None
+
+
+def fetch_pull_requests(repo_url: str, token: str | None = None) -> str:
+    """Tüm PR'ları (açık, kapalı, merge edilmiş) çeker."""
+    slug = extract_owner_repo(repo_url)
+    if not slug:
+        return "[PR bilgisi alınamadı: Geçersiz GitHub URL'si]\n"
+
+    try:
+        gh = Github(token) if token else Github()
+        repo = gh.get_repo(slug)
+
+        all_prs = list(repo.get_pulls(state="all", sort="updated", direction="desc")[:25])
+
+        if not all_prs:
+            return "PR bulunamadı.\n"
+
+        open_prs = [pr for pr in all_prs if pr.state == "open"]
+        closed_prs = [pr for pr in all_prs if pr.state == "closed"]
+
+        lines = []
+
+        if open_prs:
+            lines.append("### Açık Pull Request'ler")
+            for pr in open_prs:
+                labels = ", ".join(l.name for l in pr.labels) if pr.labels else "-"
+                lines.append(
+                    f"- **PR #{pr.number}**: {pr.title}\n"
+                    f"  Yazar: {pr.user.login} | Branch: `{pr.head.ref}` → `{pr.base.ref}` | "
+                    f"Etiketler: {labels} | Güncelleme: {pr.updated_at.strftime('%Y-%m-%d')}\n"
+                    f"  Açıklama: {(pr.body or 'Yok')[:300]}"
+                )
+
+        if closed_prs:
+            lines.append("\n### Kapatılan / Merge Edilen PR'lar")
+            for pr in closed_prs:
+                status = "✅ Merged" if pr.merged else "❌ Closed"
+                lines.append(
+                    f"- **PR #{pr.number}**: {pr.title} [{status}]\n"
+                    f"  Yazar: {pr.user.login} | Branch: `{pr.head.ref}` → `{pr.base.ref}` | "
+                    f"Tarih: {pr.closed_at.strftime('%Y-%m-%d') if pr.closed_at else '-'}\n"
+                    f"  Açıklama: {(pr.body or 'Yok')[:200]}"
+                )
+
+        return "\n".join(lines)
+
+    except GithubException as e:
+        msg = e.data.get("message", str(e)) if hasattr(e, "data") and isinstance(e.data, dict) else str(e)
+        return f"[PR bilgisi alınamadı: {msg}]\n"
+    except Exception as e:
+        return f"[PR bilgisi alınamadı: {e}]\n"
+
+
+def fetch_issues(repo_url: str, token: str | None = None) -> str:
+    """Açık issue'ları çeker."""
+    slug = extract_owner_repo(repo_url)
+    if not slug:
+        return "[Issue bilgisi alınamadı]\n"
+
+    try:
+        gh = Github(token) if token else Github()
+        repo = gh.get_repo(slug)
+
+        issues = list(repo.get_issues(state="open", sort="updated", direction="desc")[:15])
+        # PR'lar da issue olarak gelir, filtrele
+        issues = [i for i in issues if not i.pull_request]
+
+        if not issues:
+            return "Açık issue bulunamadı.\n"
+
+        lines = ["### Açık Issue'lar"]
+        for issue in issues:
+            labels = ", ".join(l.name for l in issue.labels) if issue.labels else "-"
+            lines.append(
+                f"- **#{issue.number}**: {issue.title}\n"
+                f"  Yazar: {issue.user.login} | Etiketler: {labels} | "
+                f"Tarih: {issue.created_at.strftime('%Y-%m-%d')}\n"
+                f"  Açıklama: {(issue.body or 'Yok')[:200]}"
+            )
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"[Issue bilgisi alınamadı: {e}]\n"
+
+
+def fetch_branches(repo_url: str, token: str | None = None) -> str:
+    """Repo branch'lerini çeker."""
+    slug = extract_owner_repo(repo_url)
+    if not slug:
+        return "[Branch bilgisi alınamadı]\n"
+
+    try:
+        gh = Github(token) if token else Github()
+        repo = gh.get_repo(slug)
+
+        branches = list(repo.get_branches()[:30])
+        if not branches:
+            return "Branch bulunamadı.\n"
+
+        default = repo.default_branch
+        lines = [f"### Branch'ler (varsayılan: `{default}`)"]
+        for b in branches:
+            marker = " ⭐" if b.name == default else ""
+            lines.append(f"- `{b.name}`{marker}")
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"[Branch bilgisi alınamadı: {e}]\n"
+
+
+def should_include(file_path: Path) -> bool:
+    """Dosyanın okunup context'e eklenmesi gerekip gerekmediğini belirler."""
+    if file_path.name in ALWAYS_INCLUDE:
+        return True
+    return file_path.suffix.lower() in TEXT_EXTENSIONS
+
+
+def build_tree(repo_path: str) -> str:
+    """Repo dizin ağacını string olarak oluşturur."""
+    lines = []
+    root = Path(repo_path)
+    for item in sorted(root.rglob("*")):
+        rel = item.relative_to(root)
+        parts = rel.parts
+        if any(p in IGNORED_DIRS for p in parts):
+            continue
+        indent = "  " * (len(parts) - 1)
+        name = item.name + ("/" if item.is_dir() else "")
+        lines.append(f"{indent}{name}")
+    return "\n".join(lines[:500])  # max 500 satır
+
+
+def read_repo_files(repo_path: str) -> str:
+    """Repo dosyalarını okuyup tek bir string olarak döndürür."""
+    root = Path(repo_path)
+    contents = []
+    total_chars = 0
+
+    for file_path in sorted(root.rglob("*")):
+        if not file_path.is_file():
+            continue
+        rel = file_path.relative_to(root)
+        parts = rel.parts
+        if any(p in IGNORED_DIRS for p in parts):
+            continue
+        if not should_include(file_path):
+            continue
+        if file_path.stat().st_size > MAX_FILE_SIZE:
+            contents.append(f"--- {rel} ---\n[Dosya çok büyük, atlandı ({file_path.stat().st_size} bytes)]\n")
+            continue
+
+        try:
+            text = file_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+
+        entry = f"--- {rel} ---\n{text}\n"
+        if total_chars + len(entry) > MAX_TOTAL_CHARS:
+            contents.append(f"\n[Toplam context limiti aşıldı, kalan dosyalar atlandı.]\n")
+            break
+        contents.append(entry)
+        total_chars += len(entry)
+
+    return "\n".join(contents)
+
+
+# ── Sidebar: Repo URL girişi ───────────────────────────────────────────
+
+with st.sidebar:
+    st.header("📦 GitHub Repo")
+    repo_url = st.text_input(
+        "Repo URL",
+        placeholder="https://github.com/user/repo",
+    )
+    github_token = st.text_input(
+        "GitHub Token (opsiyonel)",
+        type="password",
+        placeholder="ghp_...",
+        help="Private repolar ve daha yüksek API limiti için.",
+    )
+    load_btn = st.button("Repoyu Yükle", type="primary", use_container_width=True)
+
+    if load_btn and repo_url:
+        # Önceki repoyu temizle
+        if "repo_path" in st.session_state and st.session_state.repo_path:
+            shutil.rmtree(st.session_state.repo_path, ignore_errors=True)
+        st.session_state.messages = []
+        st.session_state.repo_context = None
+        st.session_state.repo_path = None
+        st.session_state.repo_url = None
+
+        with st.spinner("Repo klonlanıyor ve analiz ediliyor..."):
+            try:
+                token = github_token or os.getenv("GITHUB_TOKEN")
+
+                path = clone_repo(repo_url)
+                tree = build_tree(path)
+                files_content = read_repo_files(path)
+
+                pr_info = fetch_pull_requests(repo_url, token)
+                issue_info = fetch_issues(repo_url, token)
+                branch_info = fetch_branches(repo_url, token)
+
+                st.session_state.repo_path = path
+                st.session_state.repo_url = repo_url
+                st.session_state.repo_context = (
+                    f"Aşağıda bir GitHub reposunun içeriği verilmiştir.\n\n"
+                    f"Repo: {repo_url}\n\n"
+                    f"## Dizin Yapısı\n```\n{tree}\n```\n\n"
+                    f"## Pull Request'ler\n{pr_info}\n\n"
+                    f"## Issue'lar\n{issue_info}\n\n"
+                    f"## Branch'ler\n{branch_info}\n\n"
+                    f"## Dosya İçerikleri\n{files_content}"
+                )
+                st.success(f"Repo yüklendi: {repo_url}")
+            except subprocess.CalledProcessError as e:
+                st.error(f"Repo klonlanamadı. URL'yi kontrol edin.\n\n{e.stderr}")
+            except Exception as e:
+                st.error(f"Hata: {e}")
+
+    if st.session_state.get("repo_url"):
+        st.caption(f"Aktif repo: {st.session_state.repo_url}")
+
+# ── Ana alan ───────────────────────────────────────────────────────────
+
+if not st.session_state.get("repo_context"):
+    st.info("Başlamak için sol panelden bir GitHub repo URL'si girin ve 'Repoyu Yükle' butonuna tıklayın.")
+    st.stop()
+
+# Session state
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# Chat geçmişini göster
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+
+# Kullanıcı mesajı
+if user_input := st.chat_input("Repo hakkında bir soru sorun..."):
+    st.session_state.messages.append({"role": "user", "content": user_input})
+    with st.chat_message("user"):
+        st.markdown(user_input)
+
+    # OpenAI'a gönderilecek mesajlar
+    system_msg = {
+        "role": "system",
+        "content": (
+            "Sen bir kod analiz asistanısın. Kullanıcı sana bir GitHub reposunun "
+            "içeriğini verdi. Bu repoya dayanarak soruları yanıtla. "
+            "Cevaplarını Türkçe ver. Kod örnekleri gösterirken markdown kullan. "
+            "Emin olmadığın konularda bunu belirt.\n\n"
+            + st.session_state.repo_context
+        ),
+    }
+
+    api_messages = [system_msg] + [
+        {"role": m["role"], "content": m["content"]}
+        for m in st.session_state.messages
+    ]
+
+    with st.chat_message("assistant"):
+        stream = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=api_messages,
+            stream=True,
+        )
+        response = st.write_stream(stream)
+
+    st.session_state.messages.append({"role": "assistant", "content": response})
