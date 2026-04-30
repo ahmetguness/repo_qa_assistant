@@ -176,9 +176,48 @@ export default function Chatbot({ user }: ChatbotProps) {
   }
 
   function handleRepoClick(repoSlug: string) {
-    if (selectedWorkspace) {
-      handleRepoSelect(selectedWorkspace, repoSlug);
+    if (!selectedWorkspace) return;
+
+    const currentSession = sessions.find((s) => s.id === activeSessionId);
+
+    // If current session already has this repo, do nothing
+    if (currentSession?.repositorySlug === repoSlug) return;
+
+    // If current session has messages (active conversation), assign repo to it — don't open new chat
+    if (currentSession && currentSession.messages.length > 0) {
+      setSelectedRepo(repoSlug);
+      setSessions((prev) =>
+        prev.map((s) => s.id === activeSessionId
+          ? { ...s, workspaceSlug: selectedWorkspace, repositorySlug: repoSlug }
+          : s
+        )
+      );
+      syncRepoWithStatus(selectedWorkspace, repoSlug);
+      if (activeSessionId && !activeSessionId.startsWith("local-")) {
+        fetch(`/api/chat/sessions/${activeSessionId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workspaceSlug: selectedWorkspace, repositorySlug: repoSlug }),
+        }).catch(() => {});
+      }
+      return;
     }
+
+    // Empty session with no repo — assign it
+    if (currentSession && !currentSession.repositorySlug) {
+      setSelectedRepo(repoSlug);
+      setSessions((prev) =>
+        prev.map((s) => s.id === activeSessionId
+          ? { ...s, workspaceSlug: selectedWorkspace, repositorySlug: repoSlug }
+          : s
+        )
+      );
+      syncRepoWithStatus(selectedWorkspace, repoSlug);
+      return;
+    }
+
+    // Different repo — open new chat
+    handleRepoSelect(selectedWorkspace, repoSlug);
   }
 
   async function handleGitHubAnalyze(fullName: string) {
@@ -542,6 +581,28 @@ export default function Chatbot({ user }: ChatbotProps) {
                   : s
                 )
               );
+            }
+            // Update session with detected repo
+            if (data.done && data.detectedRepo) {
+              const dr = data.detectedRepo;
+              // Update current session — do NOT open new chat or trigger sync
+              setSessions((prev) =>
+                prev.map((s) => s.id === currentSessionId
+                  ? { ...s, workspaceSlug: dr.workspace, repositorySlug: dr.repo }
+                  : s
+                )
+              );
+              if (dr.workspace && dr.workspace !== "github") {
+                setSelectedWorkspace(dr.workspace);
+                setSelectedRepo(dr.repo);
+              }
+              if (!currentSessionId.startsWith("local-")) {
+                fetch(`/api/chat/sessions/${currentSessionId}`, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ workspaceSlug: dr.workspace, repositorySlug: dr.repo }),
+                }).catch(() => {});
+              }
             }
           } catch { /* ignore parse errors */ }
         }

@@ -61,14 +61,42 @@ export async function POST(request: NextRequest) {
     // Build context
     let effectiveWs = workspaceSlug;
     let effectiveRepo = repoSlug;
+    let fuzzyHint = "";
+
     if (!effectiveWs || !effectiveRepo) {
-      const detected = detectRepoFromMessage(userQuery, userWorkspaces);
-      if (detected) { effectiveWs = detected.workspace; effectiveRepo = detected.repo; }
+      // Check if user is confirming a previous repo suggestion
+      const isConfirmation = /^(evet|yes|doğru|tamam|ok|onay|onu|aynen|kesinlikle|tabii|onu istiyorum|o repo)/i.test(userQuery.trim());
+      const prevMessages = messages.filter((m: { role: string }) => m.role === "assistant");
+      const lastAiMsg = prevMessages[prevMessages.length - 1]?.content ?? "";
+
+      if (isConfirmation && lastAiMsg) {
+        // User confirmed — find the repo mentioned in previous AI message
+        const allRepos: { ws: string; slug: string; name: string }[] = [];
+        for (const ws of userWorkspaces)
+          for (const r of ws.repositories)
+            allRepos.push({ ws: ws.slug, slug: r.slug, name: r.name });
+
+        for (const r of allRepos) {
+          if (lastAiMsg.includes(r.name) || lastAiMsg.includes(r.slug)) {
+            effectiveWs = r.ws;
+            effectiveRepo = r.slug;
+            break;
+          }
+        }
+      }
+
+      // If still no repo, try to detect from message
+      if (!effectiveWs || !effectiveRepo) {
+        const detected = detectRepoFromMessage(userQuery, userWorkspaces);
+        if (detected) {
+          // Always ask for confirmation first — don't auto-select
+          fuzzyHint = `\n\n⚠️ ONAY GEREKLİ: Kullanıcının mesajında bir repo tespit edildi: "${detected.name}" (\`${detected.workspace}/${detected.repo}\`). Henüz analiz yapma! Önce kullanıcıya şunu sor: "**${detected.name}** reposunu mu kastediyorsunuz? Onaylarsanız analiz başlayacak." Repo adını **kalın** yaz. Sadece onay iste, başka bir şey yapma.`;
+        }
+      }
     }
 
     let repoContext = "";
     if (githubRepo) {
-      // GitHub repo — query by fullName directly
       repoContext = await buildRepoContextById(githubRepo, userQuery);
     } else if (effectiveWs && effectiveRepo) {
       repoContext = await buildRepoContext(effectiveWs, effectiveRepo, userQuery);
@@ -77,7 +105,7 @@ export async function POST(request: NextRequest) {
     const repoLabel = githubRepo ?? (effectiveWs && effectiveRepo ? `${effectiveWs}/${effectiveRepo}` : undefined);
     const systemPrompt = buildSystemPrompt(
       buildWorkspaceContext(userWorkspaces), repoContext, effectiveWs, effectiveRepo, repoLabel
-    );
+    ) + fuzzyHint;
 
     // Trim conversation history to save tokens
     const trimmedMessages = messages
@@ -116,7 +144,7 @@ export async function POST(request: NextRequest) {
                 controller.enqueue(encoder.encode(`data: ${JSON.stringify({ delta })}\n\n`));
               }
             }
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ done: true })}\n\n`));
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ done: true, detectedRepo: effectiveRepo ? { workspace: effectiveWs, repo: effectiveRepo } : null })}\n\n`));
             controller.close();
 
             // Save complete reply to DB
@@ -198,12 +226,67 @@ interface WorkspaceWithRepos {
   repositories: { slug: string; name: string }[];
 }
 
-function detectRepoFromMessage(msg: string, workspaces: WorkspaceWithRepos[]) {
+interface RepoMatch {
+  workspace: string;
+  repo: string;
+  name: string;
+  confidence: "exact" | "fuzzy";
+}
+
+function detectRepoFromMessage(msg: string, workspaces: WorkspaceWithRepos[]): RepoMatch | null {
   const q = msg.toLowerCase();
+  const allRepos: { ws: string; slug: string; name: string }[] = [];
   for (const ws of workspaces)
     for (const r of ws.repositories)
-      if (q.includes(r.slug.toLowerCase()) || q.includes(r.name.toLowerCase()))
-        return { workspace: ws.slug, repo: r.slug };
+      allRepos.push({ ws: ws.slug, slug: r.slug, name: r.name });
+
+  // 1. Exact match (slug or name appears in message)
+  for (const r of allRepos) {
+    if (q.includes(r.slug.toLowerCase()) || q.includes(r.name.toLowerCase())) {
+      return { workspace: r.ws, repo: r.slug, name: r.name, confidence: "exact" };
+    }
+  }
+
+  // 2. Fuzzy match — find best similarity
+  const words = q.replace(/[^a-z0-9\s-_]/g, "").split(/\s+/).filter((w) => w.length > 2);
+  let bestMatch: typeof allRepos[0] | null = null;
+  let bestScore = 0;
+
+  for (const r of allRepos) {
+    const slugParts = r.slug.toLowerCase().replace(/[-_]/g, " ").split(" ");
+    const nameParts = r.name.toLowerCase().replace(/[-_]/g, " ").split(" ");
+    const repoParts = [...new Set([...slugParts, ...nameParts])];
+
+    let score = 0;
+    for (const word of words) {
+      for (const part of repoParts) {
+        if (part.includes(word) || word.includes(part)) {
+          score += Math.min(word.length, part.length);
+        }
+        // Levenshtein-like: if only 1-2 chars different
+        if (part.length > 3 && word.length > 3 && Math.abs(part.length - word.length) <= 2) {
+          let diff = 0;
+          const shorter = part.length < word.length ? part : word;
+          const longer = part.length < word.length ? word : part;
+          for (let i = 0; i < shorter.length; i++) {
+            if (shorter[i] !== longer[i]) diff++;
+          }
+          diff += longer.length - shorter.length;
+          if (diff <= 2) score += shorter.length - diff;
+        }
+      }
+    }
+
+    if (score > bestScore && score >= 3) {
+      bestScore = score;
+      bestMatch = r;
+    }
+  }
+
+  if (bestMatch) {
+    return { workspace: bestMatch.ws, repo: bestMatch.slug, name: bestMatch.name, confidence: "fuzzy" };
+  }
+
   return null;
 }
 
@@ -252,11 +335,81 @@ async function buildRepoContext(wsSlug: string, repoSlug: string, userQuery = ""
     },
   });
   if (!repo) return "";
-  return buildRepoContextFromData(repo, userQuery);
+
+  // Two-phase: ask AI which files are relevant, then send only those
+  const selectedFiles = await selectRelevantFiles(repo, userQuery);
+  return buildRepoContextFromData(repo, userQuery, selectedFiles);
+}
+
+// Phase 1: Ask AI to select relevant files based on the question
+async function selectRelevantFiles(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  repo: any,
+  userQuery: string
+): Promise<Set<string> | null> {
+  // Skip file selection for simple queries or small repos
+  if (!userQuery || repo.files.length < 15) return null;
+
+  // Skip for queries that clearly want everything
+  if (/dosya|file|yapı|structure|ağaç|tree|genel|özet|rapor|detay/i.test(userQuery)) return null;
+
+  const fileList = repo.files
+    .map((f: { path: string; language: string | null; size: number | null }) =>
+      `${f.path} (${f.language ?? "?"}${f.size ? `, ${Math.round(f.size / 1024)}KB` : ""})`
+    )
+    .join("\n");
+
+  try {
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: `Sen bir dosya seçici asistansın. Kullanıcının sorusuna cevap vermek için hangi dosyaların okunması gerektiğini belirle.
+
+Kurallar:
+- Sadece dosya yollarını döndür, her satıra bir tane.
+- En fazla 15 dosya seç.
+- README, package.json, schema dosyaları genellikle faydalıdır.
+- Soruyla ilgili olmayan dosyaları seçme.
+- Başka bir şey yazma, sadece dosya yolları.`
+        },
+        {
+          role: "user",
+          content: `Repo: ${repo.fullName}\n\nDosyalar:\n${fileList}\n\nSoru: ${userQuery}\n\nBu soruyu cevaplamak için hangi dosyaları okumalıyım?`
+        }
+      ],
+      max_tokens: 500,
+      temperature: 0,
+    });
+
+    const answer = response.choices[0]?.message?.content ?? "";
+    const selected = new Set<string>();
+
+    for (const line of answer.split("\n")) {
+      const trimmed = line.trim().replace(/^[-*•]\s*/, "").replace(/`/g, "").trim();
+      if (trimmed && repo.files.some((f: { path: string }) => f.path === trimmed)) {
+        selected.add(trimmed);
+      }
+    }
+
+    // Always include README and key config files
+    for (const f of repo.files) {
+      const name = (f as { path: string }).path.split("/").pop()?.toLowerCase() ?? "";
+      if (name === "readme.md" || name === "package.json" || name === "schema.prisma") {
+        selected.add((f as { path: string }).path);
+      }
+    }
+
+    return selected.size > 0 ? selected : null;
+  } catch {
+    // If file selection fails, fall back to default behavior
+    return null;
+  }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function buildRepoContextFromData(repo: any, userQuery = ""): string {
+function buildRepoContextFromData(repo: any, userQuery = "", selectedFiles: Set<string> | null = null): string {
   type F = { path: string; language: string | null; size: number | null; content: string | null };
   type C = { hash: string; message: string; authorName: string; date: Date; filesChanged: string | null };
   type PR = { prNumber: number; title: string; description: string | null; state: string; authorName: string; sourceBranch: string; targetBranch: string; filesChanged: number };
@@ -330,19 +483,29 @@ function buildRepoContextFromData(repo: any, userQuery = ""): string {
       used += c.length;
     };
 
-    files.filter((f) => PRIO.has(f.path.split("/").pop()?.toLowerCase() ?? "")).forEach((f) => emit(f, 5000, "📄"));
-    files.filter((f) => CONF.has(f.path.split("/").pop()?.toLowerCase() ?? "")).forEach((f) => emit(f, 3000, "⚙️"));
-    files.filter((f) => SCHEMA.has(f.path.split("/").pop()?.toLowerCase() ?? "")).forEach((f) => emit(f, 5000, "🗄️"));
+    if (selectedFiles) {
+      // Phase 2: AI selected specific files — send those with higher budget
+      for (const f of files) {
+        if (selectedFiles.has(f.path)) {
+          emit(f, 6000, "🎯");
+        }
+      }
+    } else {
+      // Default: priority-based selection
+      files.filter((f) => PRIO.has(f.path.split("/").pop()?.toLowerCase() ?? "")).forEach((f) => emit(f, 5000, "📄"));
+      files.filter((f) => CONF.has(f.path.split("/").pop()?.toLowerCase() ?? "")).forEach((f) => emit(f, 3000, "⚙️"));
+      files.filter((f) => SCHEMA.has(f.path.split("/").pop()?.toLowerCase() ?? "")).forEach((f) => emit(f, 5000, "🗄️"));
 
-    if (wantsOverview || /api|endpoint|route/i.test(q)) {
-      files.filter((f) => /route|controller|service/i.test(f.path) && !SKIP.test(f.path)).forEach((f) => emit(f, 2000, "🔌"));
+      if (wantsOverview || /api|endpoint|route/i.test(q)) {
+        files.filter((f) => /route|controller|service/i.test(f.path) && !SKIP.test(f.path)).forEach((f) => emit(f, 2000, "🔌"));
+      }
+
+      files.filter((f) => {
+        const name = f.path.split("/").pop()?.toLowerCase() ?? "";
+        return !PRIO.has(name) && !CONF.has(name) && !SCHEMA.has(name) &&
+          !/route|controller|service/i.test(f.path) && !SKIP.test(f.path);
+      }).forEach((f) => emit(f, 2000, ""));
     }
-
-    files.filter((f) => {
-      const name = f.path.split("/").pop()?.toLowerCase() ?? "";
-      return !PRIO.has(name) && !CONF.has(name) && !SCHEMA.has(name) &&
-        !/route|controller|service/i.test(f.path) && !SKIP.test(f.path);
-    }).forEach((f) => emit(f, 2000, ""));
 
     if (used >= MAX) parts.push("\n...(bağlam limiti)");
     parts.push("");
@@ -384,7 +547,8 @@ async function buildRepoContextById(fullName: string, userQuery: string): Promis
     },
   });
   if (!repo) return "";
-  return buildRepoContextFromData(repo, userQuery);
+  const selectedFiles = await selectRelevantFiles(repo, userQuery);
+  return buildRepoContextFromData(repo, userQuery, selectedFiles);
 }
 
 // ─── Extract imports from a file to find related files ──
@@ -400,7 +564,7 @@ function extractImports(content: string, allPaths: string[], currentPath: string
   for (const pattern of patterns) {
     let match;
     while ((match = pattern.exec(content)) !== null) {
-      let importPath = match[1];
+      const importPath = match[1];
       if (importPath.startsWith(".")) {
         // Resolve relative path
         const resolved = resolveRelativePath(dir, importPath);

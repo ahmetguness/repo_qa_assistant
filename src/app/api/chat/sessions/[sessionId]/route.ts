@@ -42,7 +42,8 @@ export async function PATCH(
   }
 
   const { sessionId } = await params;
-  const { title, folderId } = await request.json();
+  const body = await request.json();
+  const { title, folderId } = body;
 
   const data: Record<string, unknown> = {};
   if (title !== undefined) {
@@ -52,6 +53,8 @@ export async function PATCH(
     data.title = title.trim().slice(0, 200);
   }
   if (folderId !== undefined) data.folderId = folderId;
+  if (body.workspaceSlug !== undefined) data.workspaceSlug = typeof body.workspaceSlug === "string" ? body.workspaceSlug.slice(0, 100) : null;
+  if (body.repositorySlug !== undefined) data.repositorySlug = typeof body.repositorySlug === "string" ? body.repositorySlug.slice(0, 200) : null;
 
   await prisma.chatSession.updateMany({
     where: { id: sessionId, userId: session.user.id },
