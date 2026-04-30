@@ -1,0 +1,76 @@
+import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
+
+// GET: Get messages for a session
+export async function GET(
+  _request: NextRequest,
+  { params }: { params: Promise<{ sessionId: string }> }
+) {
+  const session = await auth();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { sessionId } = await params;
+
+  const chatSession = await prisma.chatSession.findFirst({
+    where: { id: sessionId, userId: session.user.id },
+    include: {
+      messages: {
+        orderBy: { createdAt: "asc" },
+        select: { id: true, role: true, content: true, createdAt: true },
+      },
+    },
+  });
+
+  if (!chatSession) {
+    return NextResponse.json({ error: "Session not found" }, { status: 404 });
+  }
+
+  return NextResponse.json({ session: chatSession });
+}
+
+// PATCH: Update session title
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ sessionId: string }> }
+) {
+  const session = await auth();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { sessionId } = await params;
+  const { title, folderId } = await request.json();
+
+  const data: Record<string, unknown> = {};
+  if (title !== undefined) data.title = title;
+  if (folderId !== undefined) data.folderId = folderId;
+
+  await prisma.chatSession.updateMany({
+    where: { id: sessionId, userId: session.user.id },
+    data,
+  });
+
+  return NextResponse.json({ ok: true });
+}
+
+// DELETE: Delete a session
+export async function DELETE(
+  _request: NextRequest,
+  { params }: { params: Promise<{ sessionId: string }> }
+) {
+  const session = await auth();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { sessionId } = await params;
+
+  await prisma.chatSession.deleteMany({
+    where: { id: sessionId, userId: session.user.id },
+  });
+
+  return NextResponse.json({ ok: true });
+}

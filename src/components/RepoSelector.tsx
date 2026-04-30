@@ -59,14 +59,6 @@ export default function RepoSelector({ selectedWorkspace, selectedRepo, onSelect
     if (!selectedWorkspace) return;
     onSelect(selectedWorkspace, repoSlug);
     setIsOpen(false);
-    setSyncing(true);
-    try {
-      await fetch("/api/repos/sync", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workspace: selectedWorkspace, repo: repoSlug }),
-      });
-    } catch { /* ignore */ } finally { setSyncing(false); }
   }
 
   const selectedRepoData = repos.find((r) => r.slug === selectedRepo);

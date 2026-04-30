@@ -19,6 +19,7 @@ model User {
   sessions      Session[]
 
   chatSessions  ChatSession[]
+  chatFolders   ChatFolder[]
   workspaces    UserWorkspace[]
 
   createdAt DateTime @default(now())
@@ -193,6 +194,20 @@ model RepoBranch {
 
 // ─── Chat ───────────────────────────────────────────────
 
+model ChatFolder {
+  id     String @id @default(cuid())
+  userId String
+  name   String
+
+  sessions ChatSession[]
+  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("chat_folders")
+}
+
 model ChatSession {
   id     String @id @default(cuid())
   userId String
@@ -201,6 +216,10 @@ model ChatSession {
   // Optional: chat can be scoped to a repo
   repositorySlug  String?
   workspaceSlug   String?
+
+  // Optional folder
+  folderId String?
+  folder   ChatFolder? @relation(fields: [folderId], references: [id], onDelete: SetNull)
 
   messages ChatMessage[]
   user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)

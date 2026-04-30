@@ -15,6 +15,18 @@ import {
 const MAX_FILE_SIZE = 500 * 1024; // 500KB
 const SYNC_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour
 
+// Files to always skip (waste of tokens)
+const SKIP_FILES = new Set([
+  "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "composer.lock",
+  "gemfile.lock", "poetry.lock", "cargo.lock", "go.sum",
+  ".ds_store", "thumbs.db",
+]);
+
+const SKIP_DIRS = [
+  "node_modules", ".git", ".next", "dist", "build", "__pycache__",
+  ".cache", ".turbo", "coverage", ".nyc_output",
+];
+
 const CODE_EXTENSIONS = new Set([
   ".ts", ".tsx", ".js", ".jsx", ".py", ".java", ".go", ".rs", ".rb",
   ".php", ".cs", ".cpp", ".c", ".h", ".swift", ".kt", ".scala",
@@ -28,8 +40,16 @@ const CODE_EXTENSIONS = new Set([
 
 function shouldIndexFile(path: string, size?: number): boolean {
   if (size && size > MAX_FILE_SIZE) return false;
-  const ext = "." + path.split(".").pop()?.toLowerCase();
   const name = path.split("/").pop()?.toLowerCase() ?? "";
+  // Skip known useless files
+  if (SKIP_FILES.has(name)) return false;
+  // Skip files in ignored directories
+  if (SKIP_DIRS.some((d) => path.toLowerCase().includes(`/${d}/`) || path.toLowerCase().startsWith(`${d}/`))) return false;
+  // Skip minified files
+  if (name.includes(".min.")) return false;
+  // Skip source maps
+  if (name.endsWith(".map")) return false;
+  const ext = "." + name.split(".").pop();
   // Include known config files without extensions
   if (["dockerfile", "makefile", "rakefile", "gemfile", "procfile"].includes(name)) {
     return true;
@@ -331,7 +351,7 @@ async function collectFiles(
   entries: { path: string; type: string; size?: number }[],
   depth = 0
 ): Promise<{ path: string; size?: number }[]> {
-  if (depth > 5) return []; // Max recursion depth
+  if (depth > 8) return []; // Max recursion depth
 
   const files: { path: string; size?: number }[] = [];
 

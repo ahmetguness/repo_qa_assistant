@@ -203,7 +203,3 @@ Update `NEXTAUTH_URL` to your production domain. Ensure PostgreSQL is accessible
 - **Database**: PostgreSQL 14+ (local or managed)
 - **Process Manager**: PM2 or systemd
 - **Reverse Proxy**: Nginx or Caddy
-
-## License
-
-Private — internal use only.

@@ -4,19 +4,21 @@ import { useState, useRef, useEffect, FormEvent } from "react";
 
 interface ChatInputProps {
   onSend: (message: string) => void;
+  onStop?: () => void;
   disabled?: boolean;
+  isStreaming?: boolean;
   repoSelected?: boolean;
 }
 
-export default function ChatInput({ onSend, disabled, repoSelected }: ChatInputProps) {
+export default function ChatInput({ onSend, onStop, disabled, isStreaming, repoSelected }: ChatInputProps) {
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
-    if (!disabled && textareaRef.current) {
+    if (!disabled && !isStreaming && textareaRef.current) {
       textareaRef.current.focus();
     }
-  }, [disabled]);
+  }, [disabled, isStreaming]);
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -44,6 +46,24 @@ export default function ChatInput({ onSend, disabled, repoSelected }: ChatInputP
   return (
     <div className="bg-gradient-to-t from-[var(--bg-primary)] via-[var(--bg-primary)] to-transparent pt-2">
       <div className="max-w-3xl mx-auto px-4 md:px-8 pb-4">
+        {/* Stop button */}
+        {isStreaming && (
+          <div className="flex justify-center mb-2">
+            <button
+              onClick={onStop}
+              className="flex items-center gap-2 px-4 py-1.5 rounded-full
+                border border-[var(--border-light)] bg-[var(--bg-secondary)]
+                hover:bg-[var(--bg-hover)] text-[13px] text-[var(--text-secondary)]
+                transition-all hover:border-[var(--danger)]/30 hover:text-[var(--danger)]"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="6" y="6" width="12" height="12" rx="2" />
+              </svg>
+              Yanıtı durdur
+            </button>
+          </div>
+        )}
+
         <form onSubmit={handleSubmit} className="relative">
           <div className="flex items-end gap-2 rounded-2xl border border-[var(--border-light)] bg-[var(--bg-secondary)] focus-within:border-[var(--accent)]/40 transition-all focus-within:shadow-lg focus-within:shadow-[var(--accent)]/5">
             <textarea
@@ -52,14 +72,14 @@ export default function ChatInput({ onSend, disabled, repoSelected }: ChatInputP
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder={repoSelected ? "Repo hakkında bir soru sorun..." : "Bir mesaj yazın veya repo adı belirtin..."}
-              disabled={disabled}
+              disabled={disabled || isStreaming}
               rows={1}
               className="flex-1 resize-none bg-transparent px-4 py-3.5 text-[14.5px] text-[var(--text-primary)] outline-none placeholder:text-[var(--text-tertiary)] disabled:opacity-40"
               aria-label="Mesaj giriş alanı"
             />
             <button
               type="submit"
-              disabled={disabled || !input.trim()}
+              disabled={disabled || isStreaming || !input.trim()}
               className="flex-shrink-0 m-1.5 w-9 h-9 rounded-xl flex items-center justify-center
                 bg-[var(--accent)] hover:bg-[var(--accent-hover)]
                 disabled:bg-[var(--bg-tertiary)] disabled:text-[var(--text-tertiary)]

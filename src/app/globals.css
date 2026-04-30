@@ -105,3 +105,23 @@ body {
   border-top: 1px solid var(--border);
   margin: 1em 0;
 }
+
+/* Syntax highlighting (GitHub Dark theme) */
+.hljs { color: #c9d1d9; }
+.hljs-keyword, .hljs-selector-tag { color: #ff7b72; }
+.hljs-string, .hljs-attr { color: #a5d6ff; }
+.hljs-number, .hljs-literal { color: #79c0ff; }
+.hljs-comment { color: #8b949e; font-style: italic; }
+.hljs-function .hljs-title, .hljs-title.function_ { color: #d2a8ff; }
+.hljs-class .hljs-title, .hljs-title.class_ { color: #f0883e; }
+.hljs-variable, .hljs-template-variable { color: #ffa657; }
+.hljs-type, .hljs-built_in { color: #79c0ff; }
+.hljs-params { color: #c9d1d9; }
+.hljs-meta { color: #8b949e; }
+.hljs-regexp { color: #7ee787; }
+.hljs-tag { color: #7ee787; }
+.hljs-name { color: #7ee787; }
+.hljs-selector-class { color: #d2a8ff; }
+.hljs-selector-id { color: #ffa657; }
+.hljs-property { color: #79c0ff; }
+.hljs-punctuation { color: #c9d1d9; }
