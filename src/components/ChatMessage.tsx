@@ -10,6 +10,8 @@ interface ChatMessageProps {
   repoSlugs?: string[];
   onRepoClick?: (repoSlug: string) => void;
   onRegenerate?: (messageId: string) => void;
+  onEdit?: (messageId: string, newContent: string) => void;
+  isLastUser?: boolean;
   isLast?: boolean;
   isStreaming?: boolean;
 }
@@ -45,8 +47,10 @@ function CopyButton({ text, label = "Kopyala" }: { text: string; label?: string 
   );
 }
 
-export default function ChatMessage({ message, repoSlugs = [], onRepoClick, onRegenerate, isLast, isStreaming }: ChatMessageProps) {
+export default function ChatMessage({ message, repoSlugs = [], onRepoClick, onRegenerate, onEdit, isLastUser, isLast, isStreaming }: ChatMessageProps) {
   const isUser = message.role === "user";
+  const [isEditing, setIsEditing] = useState(false);
+  const [editContent, setEditContent] = useState(message.content);
 
   const markdownComponents: Components = useCallback(() => ({
     strong: ({ children }: { children?: React.ReactNode }) => {
@@ -114,9 +118,68 @@ export default function ChatMessage({ message, repoSlugs = [], onRepoClick, onRe
               {isUser ? "Sen" : "Repo QA Assistant"}
             </p>
             {isUser ? (
-              <div className="inline-block text-[14.5px] leading-relaxed bg-[var(--user-bubble)] border border-[var(--border)] rounded-2xl rounded-tr-sm px-4 py-2.5 text-[var(--text-primary)]">
-                {message.content}
-              </div>
+              <>
+                {isEditing ? (
+                  <div className="inline-block w-full max-w-md text-left">
+                    <textarea
+                      autoFocus
+                      value={editContent}
+                      onChange={(e) => setEditContent(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          const trimmed = editContent.trim();
+                          if (trimmed && onEdit) { onEdit(message.id, trimmed); }
+                          setIsEditing(false);
+                        }
+                        if (e.key === "Escape") { setIsEditing(false); setEditContent(message.content); }
+                      }}
+                      className="w-full resize-none rounded-xl border border-[var(--accent)]/40 bg-[var(--user-bubble)] px-4 py-2.5 text-[14.5px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                      rows={Math.min(editContent.split("\n").length + 1, 6)}
+                    />
+                    <div className="flex justify-end gap-2 mt-2">
+                      <button
+                        onClick={() => { setIsEditing(false); setEditContent(message.content); }}
+                        className="px-3 py-1 rounded-lg text-[12px] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] transition-colors"
+                      >
+                        İptal
+                      </button>
+                      <button
+                        onClick={() => {
+                          const trimmed = editContent.trim();
+                          if (trimmed && onEdit) { onEdit(message.id, trimmed); }
+                          setIsEditing(false);
+                        }}
+                        disabled={!editContent.trim()}
+                        className="px-3 py-1 rounded-lg text-[12px] bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] disabled:opacity-40 transition-colors"
+                      >
+                        Gönder
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="inline-block relative">
+                    <div className="text-[14.5px] leading-relaxed bg-[var(--user-bubble)] border border-[var(--border)] rounded-2xl rounded-tr-sm px-4 py-2.5 text-[var(--text-primary)]">
+                      {message.content}
+                    </div>
+                    {isLastUser && onEdit && !isStreaming && (
+                      <button
+                        onClick={() => { setEditContent(message.content); setIsEditing(true); }}
+                        className="absolute -bottom-6 right-0 flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px]
+                          text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]
+                          hover:bg-[var(--bg-hover)] transition-colors opacity-0 group-hover/msg:opacity-100"
+                        title="Düzenle ve tekrar gönder"
+                      >
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                        </svg>
+                        Düzenle
+                      </button>
+                    )}
+                  </div>
+                )}
+              </>
             ) : (
               <div className="markdown-body text-[14.5px] leading-7 text-[var(--text-primary)]">
                 <ReactMarkdown rehypePlugins={[rehypeHighlight]} components={markdownComponents}>

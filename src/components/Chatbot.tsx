@@ -7,6 +7,7 @@ import ChatInput from "./ChatInput";
 import Sidebar from "./Sidebar";
 import RepoSelector from "./RepoSelector";
 import RepoInfoCard from "./RepoInfoCard";
+import GitHubInput from "./GitHubInput";
 
 interface ChatbotProps {
   user: {
@@ -32,6 +33,7 @@ export default function Chatbot({ user }: ChatbotProps) {
   const [repoSyncStatus, setRepoSyncStatus] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const syncAbortRef = useRef<AbortController | null>(null);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null;
 
@@ -114,12 +116,22 @@ export default function Chatbot({ user }: ChatbotProps) {
   }
 
   async function handleSelectSession(sessionId: string) {
+    // Cancel ongoing sync
+    if (syncAbortRef.current) { syncAbortRef.current.abort(); setRepoSyncing(false); setRepoSyncStatus(""); }
     setActiveSessionId(sessionId);
     const session = sessions.find((s) => s.id === sessionId);
     if (session) {
       // Restore repo selection from this session
-      if (session.workspaceSlug) setSelectedWorkspace(session.workspaceSlug);
-      setSelectedRepo(session.repositorySlug ?? null);
+      if (session.workspaceSlug && session.workspaceSlug !== "github") {
+        setSelectedWorkspace(session.workspaceSlug);
+        setSelectedRepo(session.repositorySlug ?? null);
+      } else if (session.workspaceSlug === "github") {
+        // GitHub session — clear Bitbucket selection
+        setSelectedRepo(null);
+      } else {
+        // No repo session — clear selection
+        setSelectedRepo(null);
+      }
       if (session.messages.length === 0) await loadSessionMessages(sessionId);
     }
   }
@@ -143,7 +155,11 @@ export default function Chatbot({ user }: ChatbotProps) {
   }
 
   async function handleNewChat() {
-    await createNewChat(selectedWorkspace, selectedRepo);
+    // Cancel ongoing sync
+    if (syncAbortRef.current) { syncAbortRef.current.abort(); setRepoSyncing(false); setRepoSyncStatus(""); }
+    // New chat should be clean — no repo pre-selected
+    await createNewChat(selectedWorkspace, null);
+    setSelectedRepo(null);
   }
 
   async function handleRepoSelect(workspace: string | null, repo: string | null) {
@@ -161,6 +177,63 @@ export default function Chatbot({ user }: ChatbotProps) {
   function handleRepoClick(repoSlug: string) {
     if (selectedWorkspace) {
       handleRepoSelect(selectedWorkspace, repoSlug);
+    }
+  }
+
+  async function handleGitHubAnalyze(fullName: string) {
+    // Cancel any ongoing sync
+    if (syncAbortRef.current) { syncAbortRef.current.abort(); }
+
+    // Create a new chat for this GitHub repo
+    const localId = `local-${crypto.randomUUID()}`;
+    const newSession: ChatSession = {
+      id: localId,
+      title: fullName.split("/").pop() ?? fullName,
+      messages: [],
+      repositorySlug: fullName,
+      workspaceSlug: "github",
+      folderId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    setSessions((prev) => [newSession, ...prev]);
+    setActiveSessionId(localId);
+    setSelectedRepo(null);
+
+    // Show sync status banner (reuse same state as Bitbucket)
+    const controller = new AbortController();
+    syncAbortRef.current = controller;
+    setRepoSyncing(true);
+    setRepoSyncStatus("GitHub reposu klonlanıyor...");
+
+    const statusTimers = [
+      setTimeout(() => setRepoSyncStatus("Dosya ağacı alınıyor..."), 2000),
+      setTimeout(() => setRepoSyncStatus("Dosya içerikleri indiriliyor..."), 5000),
+      setTimeout(() => setRepoSyncStatus("Commit geçmişi alınıyor..."), 10000),
+      setTimeout(() => setRepoSyncStatus("PR'lar ve branch'ler alınıyor..."), 15000),
+      setTimeout(() => setRepoSyncStatus("Neredeyse hazır..."), 20000),
+    ];
+
+    try {
+      const [owner, repo] = fullName.split("/");
+      await fetch("/api/github/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: `https://github.com/${owner}/${repo}` }),
+        signal: controller.signal,
+      });
+      if (!controller.signal.aborted) {
+        setRepoSyncStatus("Repo hazır! ✓");
+        setTimeout(() => { setRepoSyncing(false); setRepoSyncStatus(""); }, 1500);
+      }
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      setRepoSyncStatus("GitHub analiz hatası");
+      setTimeout(() => { setRepoSyncing(false); setRepoSyncStatus(""); }, 2000);
+    } finally {
+      statusTimers.forEach(clearTimeout);
+      if (controller.signal.aborted) { setRepoSyncing(false); setRepoSyncStatus(""); }
+      syncAbortRef.current = null;
     }
   }
 
@@ -228,6 +301,11 @@ export default function Chatbot({ user }: ChatbotProps) {
   }
 
   async function syncRepoWithStatus(workspace: string, repo: string) {
+    // Cancel any ongoing sync
+    if (syncAbortRef.current) syncAbortRef.current.abort();
+    const controller = new AbortController();
+    syncAbortRef.current = controller;
+
     setRepoSyncing(true);
     setRepoSyncStatus("Repo bağlantısı kuruluyor...");
     const statusTimers = [
@@ -241,14 +319,20 @@ export default function Chatbot({ user }: ChatbotProps) {
       await fetch("/api/repos/sync", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ workspace, repo }),
+        signal: controller.signal,
       });
-      setRepoSyncStatus("Repo hazır! ✓");
-      setTimeout(() => { setRepoSyncing(false); setRepoSyncStatus(""); }, 1500);
-    } catch {
+      if (!controller.signal.aborted) {
+        setRepoSyncStatus("Repo hazır! ✓");
+        setTimeout(() => { setRepoSyncing(false); setRepoSyncStatus(""); }, 1500);
+      }
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
       setRepoSyncStatus("Senkronizasyon hatası");
       setTimeout(() => { setRepoSyncing(false); setRepoSyncStatus(""); }, 2000);
     } finally {
       statusTimers.forEach(clearTimeout);
+      if (controller.signal.aborted) { setRepoSyncing(false); setRepoSyncStatus(""); }
+      syncAbortRef.current = null;
     }
   }
 
@@ -258,6 +342,26 @@ export default function Chatbot({ user }: ChatbotProps) {
       abortControllerRef.current = null;
       setIsLoading(false);
     }
+  }
+
+  async function handleEdit(messageId: string, newContent: string) {
+    if (!activeSessionId || isLoading) return;
+    const session = sessions.find((s) => s.id === activeSessionId);
+    if (!session) return;
+
+    const msgIndex = session.messages.findIndex((m) => m.id === messageId);
+    if (msgIndex < 0 || session.messages[msgIndex].role !== "user") return;
+
+    // Remove this message and everything after it (the AI response)
+    setSessions((prev) =>
+      prev.map((s) => s.id === activeSessionId
+        ? { ...s, messages: s.messages.slice(0, msgIndex) }
+        : s
+      )
+    );
+
+    // Send the edited content
+    await handleSend(newContent);
   }
 
   async function handleRegenerate(messageId: string) {
@@ -347,6 +451,7 @@ export default function Chatbot({ user }: ChatbotProps) {
 
       const ws = latestSession?.workspaceSlug ?? selectedWorkspace;
       const repo = latestSession?.repositorySlug ?? selectedRepo;
+      const isGitHub = ws === "github";
 
       // Add empty bot message for streaming
       setSessions((prev) =>
@@ -361,7 +466,14 @@ export default function Chatbot({ user }: ChatbotProps) {
 
       const res = await fetch("/api/chat", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: history, workspaceSlug: ws, repoSlug: repo, sessionId: currentSessionId, stream: true }),
+        body: JSON.stringify({
+          messages: history,
+          workspaceSlug: isGitHub ? undefined : ws,
+          repoSlug: isGitHub ? undefined : repo,
+          githubRepo: isGitHub ? repo : undefined,
+          sessionId: currentSessionId,
+          stream: true,
+        }),
         signal: controller.signal,
       });
 
@@ -432,7 +544,8 @@ export default function Chatbot({ user }: ChatbotProps) {
     }
   }
 
-  const effectiveRepo = sessionRepo ?? selectedRepo;
+  const isGitHubSession = sessionWorkspace === "github";
+  const effectiveRepo = isGitHubSession ? sessionRepo : (sessionRepo ?? selectedRepo);
   const quickQuestions = effectiveRepo
     ? [
         { icon: "📁", text: "Bu repodaki dosya yapısını göster" },
@@ -513,19 +626,29 @@ export default function Chatbot({ user }: ChatbotProps) {
               <h2 className="text-[13px] font-medium text-[var(--text-primary)] truncate">
                 {activeSession?.title ?? "Yeni Sohbet"}
               </h2>
-              {effectiveRepo && selectedWorkspace && (
+              {effectiveRepo && !isGitHubSession && selectedWorkspace && (
                 <RepoInfoCard workspace={selectedWorkspace} repo={effectiveRepo} />
               )}
-              {effectiveRepo && !selectedWorkspace && (
+              {effectiveRepo && isGitHubSession && (
+                <p className="text-[11px] text-[var(--text-tertiary)] truncate flex items-center gap-1">
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" className="flex-shrink-0">
+                    <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z" />
+                  </svg>
+                  {effectiveRepo}
+                </p>
+              )}
+              {effectiveRepo && !isGitHubSession && !selectedWorkspace && (
                 <p className="text-[11px] text-[var(--accent)] truncate">{effectiveRepo}</p>
               )}
             </div>
           </div>
-          <RepoSelector
-            selectedWorkspace={selectedWorkspace}
-            selectedRepo={selectedRepo}
-            onSelect={handleRepoSelect}
-          />
+          {!isGitHubSession && (
+            <RepoSelector
+              selectedWorkspace={selectedWorkspace}
+              selectedRepo={selectedRepo}
+              onSelect={handleRepoSelect}
+            />
+          )}
         </header>
 
         {/* Messages */}
@@ -538,7 +661,7 @@ export default function Chatbot({ user }: ChatbotProps) {
                     <path d="M21 12a9 9 0 1 1-6.219-8.56" />
                   </svg>
                   <div className="min-w-0">
-                    <p className="text-[13px] font-medium text-[var(--accent)]">{selectedRepo} analiz ediliyor</p>
+                    <p className="text-[13px] font-medium text-[var(--accent)]">{effectiveRepo ?? selectedRepo} analiz ediliyor</p>
                     <p className="text-[12px] text-[var(--accent)]/70">{repoSyncStatus}</p>
                   </div>
                 </div>
@@ -570,20 +693,39 @@ export default function Chatbot({ user }: ChatbotProps) {
                   </button>
                 ))}
               </div>
+
+              {/* GitHub public repo input */}
+              {!effectiveRepo && (
+                <div className="mt-8 w-full flex flex-col items-center">
+                  <div className="flex items-center gap-3 mb-3">
+                    <div className="h-px w-12 bg-[var(--border)]" />
+                    <span className="text-[11px] text-[var(--text-tertiary)] uppercase tracking-wider">veya</span>
+                    <div className="h-px w-12 bg-[var(--border)]" />
+                  </div>
+                  <p className="text-[12px] text-[var(--text-tertiary)] mb-3">Public GitHub reposu analiz et</p>
+                  <GitHubInput onAnalyze={handleGitHubAnalyze} />
+                </div>
+              )}
             </div>
           ) : (
             <div>
-              {activeSession.messages.map((msg, idx) => (
-                <ChatMessage
-                  key={msg.id}
-                  message={msg}
-                  repoSlugs={repoSlugs}
-                  onRepoClick={handleRepoClick}
-                  onRegenerate={handleRegenerate}
-                  isLast={idx === activeSession.messages.length - 1}
-                  isStreaming={isLoading && idx === activeSession.messages.length - 1}
-                />
-              ))}
+              {activeSession.messages.map((msg, idx) => {
+                const isLastUserMsg = msg.role === "user" &&
+                  activeSession.messages.slice(idx + 1).every((m) => m.role !== "user");
+                return (
+                  <ChatMessage
+                    key={msg.id}
+                    message={msg}
+                    repoSlugs={repoSlugs}
+                    onRepoClick={handleRepoClick}
+                    onRegenerate={handleRegenerate}
+                    onEdit={handleEdit}
+                    isLastUser={isLastUserMsg}
+                    isLast={idx === activeSession.messages.length - 1}
+                    isStreaming={isLoading && idx === activeSession.messages.length - 1}
+                  />
+                );
+              })}
               <div ref={messagesEndRef} className="h-4" />
             </div>
           )}

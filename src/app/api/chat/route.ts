@@ -17,7 +17,7 @@ export async function POST(request: NextRequest) {
     return new Response(JSON.stringify({ error: "⚠️ OpenAI API anahtarı henüz ayarlanmamış." }), { headers: { "Content-Type": "application/json" } });
   }
 
-  const { messages, workspaceSlug, repoSlug, sessionId, stream: wantStream } = await request.json();
+  const { messages, workspaceSlug, repoSlug, sessionId, stream: wantStream, githubRepo } = await request.json();
   if (!Array.isArray(messages) || messages.length === 0) {
     return new Response(JSON.stringify({ error: "Messages required" }), { status: 400, headers: { "Content-Type": "application/json" } });
   }
@@ -51,12 +51,16 @@ export async function POST(request: NextRequest) {
     }
 
     let repoContext = "";
-    if (effectiveWs && effectiveRepo) {
+    if (githubRepo) {
+      // GitHub repo — query by fullName directly
+      repoContext = await buildRepoContextById(githubRepo, userQuery);
+    } else if (effectiveWs && effectiveRepo) {
       repoContext = await buildRepoContext(effectiveWs, effectiveRepo, userQuery);
     }
 
+    const repoLabel = githubRepo ?? (effectiveWs && effectiveRepo ? `${effectiveWs}/${effectiveRepo}` : undefined);
     const systemPrompt = buildSystemPrompt(
-      buildWorkspaceContext(userWorkspaces), repoContext, effectiveWs, effectiveRepo
+      buildWorkspaceContext(userWorkspaces), repoContext, effectiveWs, effectiveRepo, repoLabel
     );
 
     // Trim conversation history to save tokens
@@ -199,7 +203,7 @@ function buildWorkspaceContext(workspaces: WorkspaceWithRepos[]): string {
   return p.join("\n");
 }
 
-function buildSystemPrompt(wCtx: string, rCtx: string, ws?: string, repo?: string): string {
+function buildSystemPrompt(wCtx: string, rCtx: string, ws?: string, repo?: string, repoLabel?: string): string {
   const base = `Sen bir şirket içi kıdemli yazılım mühendisi ve kod analiz uzmanısın. Bitbucket repolarını derinlemesine analiz edip, teknik ve teknik olmayan kişilerin anlayabileceği şekilde açıklıyorsun.
 
 Kurallar:
@@ -213,7 +217,7 @@ Kurallar:
 
   let ctx = base + "\n\n";
   if (wCtx) ctx += wCtx + "\n\n";
-  if (rCtx) ctx += `"${ws}/${repo}" reposu analiz edilmiş:\n\n${rCtx}`;
+  if (rCtx) ctx += `"${repoLabel ?? `${ws}/${repo}`}" reposu analiz edilmiş:\n\n${rCtx}`;
   else if (ws && repo) ctx += `"${ws}/${repo}" henüz indekslenmemiş.`;
   else ctx += "Repo seçili değil.";
   return ctx;
@@ -232,33 +236,46 @@ async function buildRepoContext(wsSlug: string, repoSlug: string, userQuery = ""
     },
   });
   if (!repo) return "";
+  return buildRepoContextFromData(repo, userQuery);
+}
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildRepoContextFromData(repo: any, userQuery = ""): string {
+  type F = { path: string; language: string | null; size: number | null; content: string | null };
+  type C = { hash: string; message: string; authorName: string; date: Date; filesChanged: string | null };
+  type PR = { prNumber: number; title: string; description: string | null; state: string; authorName: string; sourceBranch: string; targetBranch: string; filesChanged: number };
+  type B = { name: string };
+
+  const files: F[] = repo.files;
+  const commits: C[] = repo.commits;
+  const pullRequests: PR[] = repo.pullRequests;
+  const branches: B[] = repo.branches;
   const q = userQuery.toLowerCase();
   const parts: string[] = [];
 
   const langStats: Record<string, number> = {};
-  for (const f of repo.files) langStats[f.language ?? "Diğer"] = (langStats[f.language ?? "Diğer"] ?? 0) + 1;
+  for (const f of files) langStats[f.language ?? "Diğer"] = (langStats[f.language ?? "Diğer"] ?? 0) + 1;
   parts.push(`## ${repo.fullName}`);
-  parts.push(`${repo.description ?? ""} | ${repo.language ?? "?"} | ${repo.defaultBranch} | ${repo.files.length} dosya`);
+  parts.push(`${repo.description ?? ""} | ${repo.language ?? "?"} | ${repo.defaultBranch} | ${files.length} dosya`);
   parts.push(`Diller: ${Object.entries(langStats).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([l, c]) => `${l}:${c}`).join(", ")}\n`);
 
   const wantsCommits = /commit|değişik|geçmiş|history|log/i.test(q);
   const wantsPRs = /pr|pull.?request|merge/i.test(q);
   const wantsBranches = /branch|dal/i.test(q);
   const wantsFiles = /dosya|file|yapı|structure|ağaç|tree/i.test(q);
-  const wantsSpecific = findFileRef(q, repo.files.map(f => f.path));
+  const wantsSpecific = findFileRef(q, files.map((f) => f.path));
   const wantsOverview = /ne işe|nedir|açıkla|analiz|rapor|özet|proje|teknoloji|mimari|api|endpoint|route|detay/i.test(q);
   const isGeneral = !wantsCommits && !wantsPRs && !wantsBranches && !wantsFiles && !wantsSpecific && !wantsOverview;
 
   if (wantsFiles || wantsOverview || isGeneral) {
     parts.push("## Dosya Yapısı");
-    parts.push(buildFileTree(repo.files.map(f => f.path)));
+    parts.push(buildFileTree(files.map((f) => f.path)));
     parts.push("");
   }
 
   if (wantsBranches || wantsOverview) {
-    parts.push(`## Branch'ler (${repo.branches.length})`);
-    repo.branches.forEach(b => parts.push(`- ${b.name}${b.name === repo.defaultBranch ? " ⭐" : ""}`));
+    parts.push(`## Branch'ler (${branches.length})`);
+    branches.forEach((b) => parts.push(`- ${b.name}${b.name === repo.defaultBranch ? " ⭐" : ""}`));
     parts.push("");
   }
 
@@ -266,17 +283,15 @@ async function buildRepoContext(wsSlug: string, repoSlug: string, userQuery = ""
   let used = 0;
 
   if (wantsSpecific) {
-    const f = repo.files.find(f => f.path.toLowerCase() === wantsSpecific.toLowerCase());
+    const f = files.find((f) => f.path.toLowerCase() === wantsSpecific!.toLowerCase());
     if (f?.content) {
-      // Also find files that this file imports
-      const imports = extractImports(f.content, repo.files.map(ff => ff.path), f.path);
+      const imports = extractImports(f.content, files.map((ff) => ff.path), f.path);
       const c = f.content.length > 8000 ? f.content.slice(0, 8000) + "\n...(kırpıldı)" : f.content;
       parts.push(`## ${f.path}\n\`\`\`${f.language?.toLowerCase() ?? ""}\n${c}\n\`\`\`\n`);
       used += c.length;
 
-      // Include imported files
       for (const imp of imports) {
-        const impFile = repo.files.find(ff => ff.path === imp);
+        const impFile = files.find((ff) => ff.path === imp);
         if (impFile?.content && used < MAX) {
           const ic = impFile.content.length > 3000 ? impFile.content.slice(0, 3000) + "\n...(kırpıldı)" : impFile.content;
           parts.push(`### İlişkili: ${impFile.path}\n\`\`\`${impFile.language?.toLowerCase() ?? ""}\n${ic}\n\`\`\`\n`);
@@ -292,26 +307,26 @@ async function buildRepoContext(wsSlug: string, repoSlug: string, userQuery = ""
     const SCHEMA = new Set(["schema.prisma", "schema.sql"]);
     const SKIP = /migration|\.lock|lock\.json|\.min\.|node_modules|dist\/|build\/|\.map$/i;
 
-    const emit = (file: typeof repo.files[0], max: number, icon: string) => {
+    const emit = (file: F, max: number, icon: string) => {
       if (!file.content || used > MAX) return;
       const c = file.content.length > max ? file.content.slice(0, max) + "\n...(kırpıldı)" : file.content;
       parts.push(`\n### ${icon} ${file.path}\n\`\`\`${file.language?.toLowerCase() ?? ""}\n${c}\n\`\`\``);
       used += c.length;
     };
 
-    repo.files.filter(f => PRIO.has(f.path.split("/").pop()?.toLowerCase() ?? "")).forEach(f => emit(f, 5000, "📄"));
-    repo.files.filter(f => CONF.has(f.path.split("/").pop()?.toLowerCase() ?? "")).forEach(f => emit(f, 3000, "⚙️"));
-    repo.files.filter(f => SCHEMA.has(f.path.split("/").pop()?.toLowerCase() ?? "")).forEach(f => emit(f, 5000, "🗄️"));
+    files.filter((f) => PRIO.has(f.path.split("/").pop()?.toLowerCase() ?? "")).forEach((f) => emit(f, 5000, "📄"));
+    files.filter((f) => CONF.has(f.path.split("/").pop()?.toLowerCase() ?? "")).forEach((f) => emit(f, 3000, "⚙️"));
+    files.filter((f) => SCHEMA.has(f.path.split("/").pop()?.toLowerCase() ?? "")).forEach((f) => emit(f, 5000, "🗄️"));
 
     if (wantsOverview || /api|endpoint|route/i.test(q)) {
-      repo.files.filter(f => /route|controller|service/i.test(f.path) && !SKIP.test(f.path)).forEach(f => emit(f, 2000, "🔌"));
+      files.filter((f) => /route|controller|service/i.test(f.path) && !SKIP.test(f.path)).forEach((f) => emit(f, 2000, "🔌"));
     }
 
-    repo.files.filter(f => {
+    files.filter((f) => {
       const name = f.path.split("/").pop()?.toLowerCase() ?? "";
       return !PRIO.has(name) && !CONF.has(name) && !SCHEMA.has(name) &&
         !/route|controller|service/i.test(f.path) && !SKIP.test(f.path);
-    }).forEach(f => emit(f, 2000, ""));
+    }).forEach((f) => emit(f, 2000, ""));
 
     if (used >= MAX) parts.push("\n...(bağlam limiti)");
     parts.push("");
@@ -320,10 +335,10 @@ async function buildRepoContext(wsSlug: string, repoSlug: string, userQuery = ""
   if (wantsCommits || wantsOverview || isGeneral) {
     const n = wantsCommits ? 20 : 8;
     parts.push(`## Son Commit'ler`);
-    repo.commits.slice(0, n).forEach(c => {
+    commits.slice(0, n).forEach((c) => {
       const d = c.date.toISOString().split("T")[0];
-      const f = c.filesChanged ? ` | ${c.filesChanged.split(",").slice(0, 3).join(", ")}` : "";
-      parts.push(`- [${c.hash.slice(0, 7)}] ${d} ${c.authorName}: ${c.message.split("\n")[0]}${f}`);
+      const fc = c.filesChanged ? ` | ${c.filesChanged.split(",").slice(0, 3).join(", ")}` : "";
+      parts.push(`- [${c.hash.slice(0, 7)}] ${d} ${c.authorName}: ${c.message.split("\n")[0]}${fc}`);
     });
     parts.push("");
   }
@@ -331,13 +346,29 @@ async function buildRepoContext(wsSlug: string, repoSlug: string, userQuery = ""
   if (wantsPRs || wantsOverview || isGeneral) {
     const n = wantsPRs ? 15 : 5;
     parts.push(`## Pull Request'ler`);
-    repo.pullRequests.slice(0, n).forEach(pr => {
+    pullRequests.slice(0, n).forEach((pr) => {
       parts.push(`- PR #${pr.prNumber} [${pr.state}] "${pr.title}" (${pr.authorName}, ${pr.sourceBranch}→${pr.targetBranch}, ${pr.filesChanged} dosya)`);
       if (pr.description && wantsPRs) parts.push(`  ${pr.description.slice(0, 200)}`);
     });
   }
 
   return parts.join("\n");
+}
+
+// ─── GitHub repo context (by fullName) ──────────────
+
+async function buildRepoContextById(fullName: string, userQuery: string): Promise<string> {
+  const repo = await prisma.repository.findFirst({
+    where: { source: "github", fullName },
+    include: {
+      files: { select: { path: true, language: true, size: true, content: true }, orderBy: { path: "asc" } },
+      commits: { select: { hash: true, message: true, authorName: true, date: true, filesChanged: true }, orderBy: { date: "desc" }, take: 20 },
+      pullRequests: { select: { prNumber: true, title: true, description: true, state: true, authorName: true, sourceBranch: true, targetBranch: true, filesChanged: true }, orderBy: { updatedDate: "desc" }, take: 15 },
+      branches: { select: { name: true }, orderBy: { name: "asc" } },
+    },
+  });
+  if (!repo) return "";
+  return buildRepoContextFromData(repo, userQuery);
 }
 
 // ─── Extract imports from a file to find related files ──

@@ -102,13 +102,14 @@ model Repository {
   slug        String
   name        String
   fullName    String
+  source      String  @default("bitbucket") // "bitbucket" | "github"
   description String? @db.Text
   language    String?
   isPrivate   Boolean @default(true)
   defaultBranch String @default("main")
-  workspaceId String
+  workspaceId String?
 
-  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace    Workspace?    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   files        RepoFile[]
   commits      RepoCommit[]
   pullRequests RepoPullRequest[]
@@ -119,6 +120,7 @@ model Repository {
   updatedAt    DateTime  @updatedAt
 
   @@unique([workspaceId, slug])
+  @@unique([source, fullName])
   @@map("repositories")
 }
 
