@@ -38,18 +38,27 @@ export default function Sidebar({
   const [confirmDelete, setConfirmDelete] = useState<{ id: string; type: "folder" | "session"; name: string; count: number } | null>(null);
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
+  const [now] = useState(() => Date.now());
   const newFolderRef = useRef<HTMLInputElement>(null);
   const dragSessionId = useRef<string | null>(null);
 
   function toggleFolder(id: string) {
-    setOpenFolders((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+    setOpenFolders((prev) => {
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
   }
 
   function startEdit(id: string, val: string) { setEditingId(id); setEditValue(val); }
 
   function commitEdit(id: string, type: "session" | "folder") {
     const t = editValue.trim();
-    if (t) { type === "session" ? onRenameSession(id, t) : onRenameFolder(id, t); }
+    if (t) {
+      if (type === "session") onRenameSession(id, t);
+      else onRenameFolder(id, t);
+    }
     setEditingId(null);
   }
 
@@ -129,7 +138,7 @@ export default function Sidebar({
   }
 
   function formatDate(date: Date) {
-    const days = Math.floor((Date.now() - date.getTime()) / 86400000);
+    const days = Math.floor((now - date.getTime()) / 86400000);
     if (days === 0) return "Bugün";
     if (days === 1) return "Dün";
     if (days < 7) return `${days} gün önce`;
@@ -422,6 +431,7 @@ export default function Sidebar({
         <div className="p-3 border-t border-[var(--border)]">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2.5 min-w-0 px-1">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
               {userImage ? <img src={userImage} alt="" className="w-7 h-7 rounded-lg" /> : (
                 <div className="w-7 h-7 rounded-lg bg-[var(--accent)] flex items-center justify-center text-white text-[11px] font-bold">{userName?.[0]?.toUpperCase() ?? "U"}</div>
               )}

@@ -30,6 +30,12 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
+# aider local artifacts
+.aider.chat.history*
+.aider.input.history*
+.aider.tags.cache*
+.aider.repo.map*
+
 # cache
 .repo_cache/
 

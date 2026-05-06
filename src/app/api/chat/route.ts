@@ -7,6 +7,9 @@ import { checkRateLimit } from "@/lib/rate-limit";
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const MAX_HISTORY_MESSAGES = 8;
+const CHAT_MODEL = process.env.OPENAI_MODEL ?? "gpt-4.1";
+const FILE_SELECTOR_MODEL = process.env.OPENAI_FILE_SELECTOR_MODEL ?? "gpt-4.1-mini";
+const MAX_CONTEXT_CHARS = Number(process.env.AI_CONTEXT_CHARS ?? 90000);
 
 export async function POST(request: NextRequest) {
   const session = await auth();
@@ -99,7 +102,7 @@ export async function POST(request: NextRequest) {
     if (githubRepo) {
       repoContext = await buildRepoContextById(githubRepo, userQuery);
     } else if (effectiveWs && effectiveRepo) {
-      repoContext = await buildRepoContext(effectiveWs, effectiveRepo, userQuery);
+      repoContext = await buildRepoContext(effectiveWs, effectiveRepo, session.user.id, userQuery);
     }
 
     const repoLabel = githubRepo ?? (effectiveWs && effectiveRepo ? `${effectiveWs}/${effectiveRepo}` : undefined);
@@ -124,10 +127,10 @@ export async function POST(request: NextRequest) {
     // Streaming response
     if (wantStream) {
       const stream = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
+        model: CHAT_MODEL,
         messages: openaiMessages,
-        max_tokens: 4096,
-        temperature: 0.3,
+        max_tokens: 6000,
+        temperature: 0.1,
         stream: true,
       });
 
@@ -171,10 +174,10 @@ export async function POST(request: NextRequest) {
 
     // Non-streaming fallback
     const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: CHAT_MODEL,
       messages: openaiMessages,
-      max_tokens: 4096,
-      temperature: 0.3,
+      max_tokens: 6000,
+      temperature: 0.1,
     });
 
     const reply = completion.choices[0]?.message?.content ?? "Yanıt alınamadı.";
@@ -314,7 +317,19 @@ Kurallar:
 - Detaylı rapor istendiğinde: Proje özeti, teknoloji yığını, mimari, DB şeması, API yapısı, iş mantığı, konfigürasyon, bağımlılıklar, geliştirme durumu başlıklarıyla yanıt ver.
 - Emin olmadığın bilgileri uydurma.`;
 
-  let ctx = base + "\n\n";
+  const qualityRules = `
+
+Ek kalite kuralları:
+- Cevabı sadece verilen repo bağlamına ve erişilebilir repo listesine dayandır. Emin değilsen "Bu bağlamda görünmüyor" de.
+- Önemli her teknik iddiada dosya yolu kaynak göster: örn. [src/lib/auth.ts].
+- Dosyalar arası bağımlılıkları, veri akışını ve kullanıcı akışını birlikte açıkla.
+- Güvenlik, yetkilendirme, veri sızıntısı, rate limit, hata yönetimi veya production riski görürsen "Riskler" bölümünde belirt.
+- Genel analiz istenirse şu sırayı kullan: Kısa özet, Kanıtlı bulgular, Mimari, Veri modeli, API/iş akışı, Riskler, İyileştirme önerileri, Kaynaklar.
+- Kısa sorularda gereksiz rapor yazma; doğrudan cevap ver, ama kritik iddiaları kaynakla.
+- "Listele", "göster", "hangi repolar" gibi repo seçimi sorularında analiz yapma; erişilebilir repo listesini net biçimde ver.
+- Uydurma isim, endpoint, tablo, env var veya bağımlılık yazma.`;
+
+  let ctx = base + qualityRules + "\n\n";
   if (wCtx) ctx += wCtx + "\n\n";
   if (rCtx) ctx += `"${repoLabel ?? `${ws}/${repo}`}" reposu analiz edilmiş:\n\n${rCtx}`;
   else if (ws && repo) ctx += `"${ws}/${repo}" henüz indekslenmemiş.`;
@@ -324,9 +339,15 @@ Kurallar:
 
 // ─── Smart repo context builder ─────────────────────
 
-async function buildRepoContext(wsSlug: string, repoSlug: string, userQuery = ""): Promise<string> {
+async function buildRepoContext(wsSlug: string, repoSlug: string, userId: string, userQuery = ""): Promise<string> {
   const repo = await prisma.repository.findFirst({
-    where: { slug: repoSlug, workspace: { slug: wsSlug } },
+    where: {
+      slug: repoSlug,
+      workspace: {
+        slug: wsSlug,
+        users: { some: { userId } },
+      },
+    },
     include: {
       files: { select: { path: true, language: true, size: true, content: true }, orderBy: { path: "asc" } },
       commits: { select: { hash: true, message: true, authorName: true, date: true, filesChanged: true }, orderBy: { date: "desc" }, take: 20 },
@@ -347,11 +368,15 @@ async function selectRelevantFiles(
   repo: any,
   userQuery: string
 ): Promise<Set<string> | null> {
+  const heuristicSelected = selectHeuristicFiles(repo.files, userQuery);
+
   // Skip file selection for simple queries or small repos
-  if (!userQuery || repo.files.length < 15) return null;
+  if (!userQuery || repo.files.length < 15) return heuristicSelected.size > 0 ? heuristicSelected : null;
 
   // Skip for queries that clearly want everything
-  if (/dosya|file|yapı|structure|ağaç|tree|genel|özet|rapor|detay/i.test(userQuery)) return null;
+  if (/dosya|file|yapı|structure|ağaç|tree|genel|özet|rapor|detay/i.test(userQuery)) {
+    return heuristicSelected.size > 0 ? heuristicSelected : null;
+  }
 
   const fileList = repo.files
     .map((f: { path: string; language: string | null; size: number | null }) =>
@@ -361,7 +386,7 @@ async function selectRelevantFiles(
 
   try {
     const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: FILE_SELECTOR_MODEL,
       messages: [
         {
           role: "system",
@@ -384,7 +409,7 @@ Kurallar:
     });
 
     const answer = response.choices[0]?.message?.content ?? "";
-    const selected = new Set<string>();
+    const selected = new Set<string>(heuristicSelected);
 
     for (const line of answer.split("\n")) {
       const trimmed = line.trim().replace(/^[-*•]\s*/, "").replace(/`/g, "").trim();
@@ -404,8 +429,242 @@ Kurallar:
     return selected.size > 0 ? selected : null;
   } catch {
     // If file selection fails, fall back to default behavior
-    return null;
+    return heuristicSelected.size > 0 ? heuristicSelected : null;
   }
+}
+
+function selectHeuristicFiles(
+  files: { path: string; language: string | null; size: number | null; content?: string | null }[],
+  userQuery: string
+): Set<string> {
+  const selected = new Set<string>();
+  const q = userQuery.toLowerCase();
+  const addIf = (predicate: (path: string, name: string) => boolean, limit: number) => {
+    for (const file of files) {
+      if (selected.size >= limit) break;
+      const path = file.path.toLowerCase();
+      const name = path.split("/").pop() ?? path;
+      if (predicate(path, name)) selected.add(file.path);
+    }
+  };
+
+  addIf((_, name) => ["readme.md", "package.json", "schema.prisma", ".env.example"].includes(name), 8);
+
+  if (/auth|login|oauth|token|session|yetki|giriş|kimlik/i.test(q)) {
+    addIf((path) => /auth|login|session|token|adapter|middleware/.test(path), 18);
+  }
+  if (/api|endpoint|route|controller|istek|request/i.test(q)) {
+    addIf((path) => /\/api\/|route\.|controller|handler|server/.test(path), 22);
+  }
+  if (/db|database|prisma|schema|model|migration|tablo|veri/i.test(q)) {
+    addIf((path) => /prisma|schema|migration|db|database|model/.test(path), 18);
+  }
+  if (/ui|component|frontend|sayfa|ekran|react|tasarım/i.test(q)) {
+    addIf((path) => /component|app\/.*page|layout|globals\.css/.test(path), 18);
+  }
+  if (/test|build|deploy|ci|docker|env|config|ayar/i.test(q)) {
+    addIf((path, name) => /test|spec|docker|ci|workflow|pipeline|config|eslint|tsconfig|next\.config/.test(path) || name.startsWith("."), 18);
+  }
+
+  const queryWords = q
+    .replace(/[^a-z0-9çğıöşü_-]+/gi, " ")
+    .split(/\s+/)
+    .filter((word) => word.length > 3);
+  const scored = files
+    .map((file) => {
+      const haystack = file.path.toLowerCase();
+      const score = queryWords.reduce((sum, word) => sum + (haystack.includes(word) ? word.length : 0), 0);
+      return { file, score };
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 12);
+  for (const item of scored) selected.add(item.file.path);
+
+  return selected;
+}
+
+function buildRepoProfile(
+  files: { path: string; language: string | null; size: number | null; content?: string | null }[],
+  selectedFiles: Set<string> | null
+): string {
+  const byName = (names: string[]) =>
+    files
+      .filter((file) => names.includes(file.path.split("/").pop()?.toLowerCase() ?? ""))
+      .map((file) => file.path);
+  const matching = (pattern: RegExp, limit: number) =>
+    files.filter((file) => pattern.test(file.path)).slice(0, limit).map((file) => file.path);
+
+  const keyFiles = [
+    ...byName(["readme.md", "package.json", "requirements.txt", "pyproject.toml", "go.mod", "cargo.toml"]),
+    ...byName(["schema.prisma", ".env.example", "dockerfile", "docker-compose.yml"]),
+  ];
+  const apiFiles = matching(/\/api\/|route\.|controller|handler/i, 24);
+  const authFiles = matching(/auth|login|session|token|adapter|middleware/i, 18);
+  const dataFiles = matching(/prisma|schema|migration|database|db/i, 18);
+  const uiFiles = matching(/component|app\/.*page|layout|globals\.css/i, 18);
+  const testFiles = matching(/test|spec|__tests__|\.test\.|\.spec\./i, 18);
+  const activeSources = selectedFiles ? [...selectedFiles] : keyFiles.slice(0, 30);
+  const intelligenceFiles = selectedFiles
+    ? files.filter((file) => selectedFiles.has(file.path))
+    : files.filter((file) =>
+        keyFiles.includes(file.path) ||
+        /\/api\/|route\.|controller|handler|auth|session|prisma|schema|component|page|layout/i.test(file.path)
+      ).slice(0, 60);
+
+  const line = (label: string, paths: string[]) =>
+    paths.length ? `- ${label}: ${[...new Set(paths)].slice(0, 30).map((path) => `\`${path}\``).join(", ")}` : "";
+  return [
+    "## Repo Profili ve Kaynak Haritası",
+    line("Ana kaynaklar", keyFiles),
+    line("Soru için seçilen kaynaklar", activeSources),
+    line("API/route adayları", apiFiles),
+    line("Auth/session adayları", authFiles),
+    line("Veri modeli/DB adayları", dataFiles),
+    line("UI/component adayları", uiFiles),
+    line("Test adayları", testFiles),
+    buildPackageSummary(files),
+    buildApiRouteSummary(files),
+    buildPrismaSummary(files),
+    buildSymbolSummary(intelligenceFiles),
+    buildEnvSummary(files),
+    buildImportSummary(intelligenceFiles, files.map((file) => file.path)),
+    buildRiskSignalSummary(files),
+    "Cevap verirken yukarıdaki dosya yollarını kaynak olarak kullan.",
+  ].filter(Boolean).join("\n");
+}
+
+type ProfileFile = {
+  path: string;
+  language: string | null;
+  size: number | null;
+  content?: string | null;
+};
+
+function buildPackageSummary(files: ProfileFile[]): string {
+  const packageFile = files.find((file) => file.path.split("/").pop()?.toLowerCase() === "package.json" && file.content);
+  if (!packageFile?.content) return "";
+  try {
+    const pkg = JSON.parse(packageFile.content) as {
+      scripts?: Record<string, string>;
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    const scripts = Object.entries(pkg.scripts ?? {}).map(([name, command]) => `${name}=${command}`);
+    const deps = Object.keys(pkg.dependencies ?? {}).slice(0, 25);
+    const devDeps = Object.keys(pkg.devDependencies ?? {}).slice(0, 20);
+    return [
+      "## Package Özeti",
+      `- Kaynak: \`${packageFile.path}\``,
+      scripts.length ? `- Scripts: ${scripts.map((script) => `\`${script}\``).join(", ")}` : "",
+      deps.length ? `- Dependencies: ${deps.map((dep) => `\`${dep}\``).join(", ")}` : "",
+      devDeps.length ? `- Dev dependencies: ${devDeps.map((dep) => `\`${dep}\``).join(", ")}` : "",
+    ].filter(Boolean).join("\n");
+  } catch {
+    return `## Package Özeti\n- \`${packageFile.path}\` JSON parse edilemedi.`;
+  }
+}
+
+function buildApiRouteSummary(files: ProfileFile[]): string {
+  const routes = files
+    .filter((file) => /(^|\/)app\/api\/.*\/route\.(ts|tsx|js|jsx)$/.test(file.path) && file.content)
+    .map((file) => {
+      const methods = [...file.content!.matchAll(/export\s+(?:async\s+)?function\s+(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b/g)]
+        .map((match) => match[1]);
+      const route = "/" + file.path
+        .replace(/^src\//, "")
+        .replace(/^app\/api/, "api")
+        .replace(/\/route\.(ts|tsx|js|jsx)$/, "")
+        .replace(/\[([^\]]+)\]/g, ":$1");
+      return `- \`${route}\` [${methods.length ? methods.join(", ") : "method yok"}] -> \`${file.path}\``;
+    })
+    .slice(0, 50);
+  return routes.length ? ["## API Route Haritası", ...routes].join("\n") : "";
+}
+
+function buildPrismaSummary(files: ProfileFile[]): string {
+  const schema = files.find((file) => /schema\.prisma$/i.test(file.path) && file.content);
+  if (!schema?.content) return "";
+  const models = [...schema.content.matchAll(/^model\s+(\w+)\s*{([\s\S]*?)^}/gm)]
+    .map((match) => {
+      const fields = match[2]
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line && !line.startsWith("//") && !line.startsWith("@@"))
+        .map((line) => line.split(/\s+/).slice(0, 2).join(":"))
+        .slice(0, 10);
+      return `- \`${match[1]}\`: ${fields.join(", ")}`;
+    })
+    .slice(0, 30);
+  return models.length ? ["## Prisma Model Özeti", `- Kaynak: \`${schema.path}\``, ...models].join("\n") : "";
+}
+
+function buildSymbolSummary(files: ProfileFile[]): string {
+  const lines: string[] = [];
+  for (const file of files) {
+    if (!file.content || !/\.(ts|tsx|js|jsx|py|go|java|cs|rs|rb|php)$/i.test(file.path)) continue;
+    const symbols = new Set<string>();
+    const patterns = [
+      /export\s+default\s+function\s+([A-Za-z0-9_]+)/g,
+      /export\s+(?:async\s+)?function\s+([A-Za-z0-9_]+)/g,
+      /export\s+(?:const|let|var)\s+([A-Za-z0-9_]+)/g,
+      /export\s+(?:class|interface|type)\s+([A-Za-z0-9_]+)/g,
+      /function\s+([A-Za-z0-9_]+)\s*\(/g,
+      /class\s+([A-Za-z0-9_]+)/g,
+    ];
+    for (const pattern of patterns) {
+      for (const match of file.content.matchAll(pattern)) symbols.add(match[1]);
+    }
+    if (symbols.size) lines.push(`- \`${file.path}\`: ${[...symbols].slice(0, 12).map((symbol) => `\`${symbol}\``).join(", ")}`);
+    if (lines.length >= 45) break;
+  }
+  return lines.length ? ["## Sembol/Export Haritası", ...lines].join("\n") : "";
+}
+
+function buildEnvSummary(files: ProfileFile[]): string {
+  const envVars = new Map<string, Set<string>>();
+  for (const file of files) {
+    if (!file.content) continue;
+    for (const match of file.content.matchAll(/process\.env\.([A-Z0-9_]+)/g)) {
+      if (!envVars.has(match[1])) envVars.set(match[1], new Set());
+      envVars.get(match[1])!.add(file.path);
+    }
+  }
+  const lines = [...envVars.entries()].slice(0, 40).map(([name, paths]) =>
+    `- \`${name}\`: ${[...paths].slice(0, 5).map((path) => `\`${path}\``).join(", ")}`
+  );
+  return lines.length ? ["## Env Kullanımı", ...lines].join("\n") : "";
+}
+
+function buildImportSummary(files: ProfileFile[], allPaths: string[]): string {
+  const lines: string[] = [];
+  for (const file of files) {
+    if (!file.content || !/\.(ts|tsx|js|jsx)$/i.test(file.path)) continue;
+    const imports = extractImports(file.content, allPaths, file.path);
+    if (imports.length) lines.push(`- \`${file.path}\` -> ${imports.map((path) => `\`${path}\``).join(", ")}`);
+    if (lines.length >= 35) break;
+  }
+  return lines.length ? ["## Import İlişki Haritası", ...lines].join("\n") : "";
+}
+
+function buildRiskSignalSummary(files: ProfileFile[]): string {
+  const checks: { label: string; pattern: RegExp }[] = [
+    { label: "raw HTML / XSS riski", pattern: /dangerouslySetInnerHTML|innerHTML\s*=|document\.write/i },
+    { label: "dinamik kod çalıştırma", pattern: /\beval\s*\(|new Function\s*\(/i },
+    { label: "token/secret kullanımı", pattern: /access_token|refresh_token|api[_-]?key|secret|password/i },
+    { label: "TODO/FIXME", pattern: /TODO|FIXME|HACK/i },
+    { label: "geniş any kullanımı", pattern: /:\s*any\b|<any>/i },
+    { label: "console logging", pattern: /console\.(log|error|warn)/i },
+  ];
+  const lines: string[] = [];
+  for (const check of checks) {
+    const hits = files
+      .filter((file) => file.content && check.pattern.test(file.content))
+      .map((file) => file.path)
+      .slice(0, 10);
+    if (hits.length) lines.push(`- ${check.label}: ${hits.map((path) => `\`${path}\``).join(", ")}`);
+  }
+  return lines.length ? ["## Otomatik Risk Sinyalleri", ...lines].join("\n") : "";
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -427,6 +686,8 @@ function buildRepoContextFromData(repo: any, userQuery = "", selectedFiles: Set<
   parts.push(`## ${repo.fullName}`);
   parts.push(`${repo.description ?? ""} | ${repo.language ?? "?"} | ${repo.defaultBranch} | ${files.length} dosya`);
   parts.push(`Diller: ${Object.entries(langStats).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([l, c]) => `${l}:${c}`).join(", ")}\n`);
+  parts.push(buildRepoProfile(files, selectedFiles));
+  parts.push("");
 
   const wantsCommits = /commit|değişik|geçmiş|history|log/i.test(q);
   const wantsPRs = /pr|pull.?request|merge/i.test(q);
@@ -448,7 +709,7 @@ function buildRepoContextFromData(repo: any, userQuery = "", selectedFiles: Set<
     parts.push("");
   }
 
-  const MAX = 50000;
+  const MAX = MAX_CONTEXT_CHARS;
   let used = 0;
 
   if (wantsSpecific) {
@@ -488,6 +749,16 @@ function buildRepoContextFromData(repo: any, userQuery = "", selectedFiles: Set<
       for (const f of files) {
         if (selectedFiles.has(f.path)) {
           emit(f, 6000, "🎯");
+        }
+      }
+      for (const f of files) {
+        if (!selectedFiles.has(f.path) || !f.content || used > MAX) continue;
+        const imports = extractImports(f.content, files.map((ff) => ff.path), f.path);
+        for (const importPath of imports) {
+          const imported = files.find((file) => file.path === importPath);
+          if (imported && !selectedFiles.has(imported.path)) {
+            emit(imported, 3000, "related");
+          }
         }
       }
     } else {

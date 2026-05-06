@@ -1,6 +1,6 @@
-import type { Adapter, AdapterUser, AdapterAccount, AdapterSession } from "next-auth/adapters";
+import type { Adapter, AdapterUser, AdapterSession } from "next-auth/adapters";
 import { prisma } from "@/lib/prisma";
-import { encrypt, decrypt } from "@/lib/encryption";
+import { encrypt } from "@/lib/encryption";
 
 export function CustomPrismaAdapter(): Adapter {
   return {

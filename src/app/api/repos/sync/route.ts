@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { getAccessToken } from "@/lib/get-access-token";
 import { syncRepoContent } from "@/lib/indexer";
+import { checkRateLimit } from "@/lib/rate-limit";
+import { prisma } from "@/lib/prisma";
 
 export async function POST(request: NextRequest) {
   const session = await auth();
@@ -17,6 +19,22 @@ export async function POST(request: NextRequest) {
   // Validate format
   if (workspace.length > 100 || repo.length > 100) {
     return NextResponse.json({ error: "Invalid parameters" }, { status: 400 });
+  }
+
+  const rl = checkRateLimit(session.user.id, "/api/repos/sync");
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: `Çok fazla istek. ${Math.ceil(rl.resetIn / 1000)} saniye bekleyin.` },
+      { status: 429, headers: { "Retry-After": String(Math.ceil(rl.resetIn / 1000)) } }
+    );
+  }
+
+  const hasAccess = await prisma.workspace.findFirst({
+    where: { slug: workspace, users: { some: { userId: session.user.id } } },
+    select: { id: true },
+  });
+  if (!hasAccess) {
+    return NextResponse.json({ error: "Workspace not found" }, { status: 404 });
   }
 
   const accessToken = await getAccessToken();

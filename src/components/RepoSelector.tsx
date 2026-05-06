@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 
 interface Workspace {
   id: string;
@@ -28,13 +28,9 @@ export default function RepoSelector({ selectedWorkspace, selectedRepo, onSelect
   const [repos, setRepos] = useState<Repo[]>([]);
   const [loadingWs, setLoadingWs] = useState(false);
   const [loadingRepos, setLoadingRepos] = useState(false);
-  const [syncing, setSyncing] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
 
-  useEffect(() => { loadWorkspaces(); }, []);
-  useEffect(() => { if (selectedWorkspace) loadRepos(selectedWorkspace); }, [selectedWorkspace]);
-
-  async function loadWorkspaces() {
+  const loadWorkspaces = useCallback(async () => {
     setLoadingWs(true);
     try {
       const res = await fetch("/api/workspaces");
@@ -44,16 +40,23 @@ export default function RepoSelector({ selectedWorkspace, selectedRepo, onSelect
         onSelect(data.workspaces[0].slug, null);
       }
     } catch { /* ignore */ } finally { setLoadingWs(false); }
-  }
+  }, [onSelect, selectedWorkspace]);
 
-  async function loadRepos(workspace: string) {
+  const loadRepos = useCallback(async (workspace: string) => {
     setLoadingRepos(true);
     try {
       const res = await fetch(`/api/repos?workspace=${workspace}`);
       const data = await res.json();
       setRepos(data.repos ?? []);
     } catch { /* ignore */ } finally { setLoadingRepos(false); }
-  }
+  }, []);
+
+  useEffect(() => {
+    queueMicrotask(() => void loadWorkspaces());
+  }, [loadWorkspaces]);
+  useEffect(() => {
+    if (selectedWorkspace) queueMicrotask(() => void loadRepos(selectedWorkspace));
+  }, [loadRepos, selectedWorkspace]);
 
   async function handleRepoSelect(repoSlug: string) {
     if (!selectedWorkspace) return;
@@ -79,11 +82,6 @@ export default function RepoSelector({ selectedWorkspace, selectedRepo, onSelect
         <span className="max-w-[200px] truncate">
           {selectedRepo ? (selectedRepoData?.name ?? selectedRepo) : "Repo seçin"}
         </span>
-        {syncing && (
-          <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-            <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-          </svg>
-        )}
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
           <path d="M6 9l6 6 6-6" />
         </svg>

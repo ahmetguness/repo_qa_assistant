@@ -24,7 +24,12 @@ export async function GET(request: NextRequest) {
     await syncRepositories(accessToken, workspace);
 
     const repos = await prisma.repository.findMany({
-      where: { workspace: { slug: workspace } },
+      where: {
+        workspace: {
+          slug: workspace,
+          users: { some: { userId: session.user.id } },
+        },
+      },
       orderBy: { updatedAt: "desc" },
       select: {
         id: true,

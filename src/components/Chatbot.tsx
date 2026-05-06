@@ -21,7 +21,6 @@ export default function Chatbot({ user }: ChatbotProps) {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [loadingStatus, setLoadingStatus] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [selectedWorkspace, setSelectedWorkspace] = useState<string | null>(null);
@@ -50,11 +49,13 @@ export default function Chatbot({ user }: ChatbotProps) {
     if (activeSession) scrollToBottom();
   }, [activeSession?.messages, scrollToBottom, activeSession]);
 
+  // Initial session hydration should run once on mount.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { loadSessions(); }, []);
 
   // Fetch repo slugs when workspace changes
   useEffect(() => {
-    if (!selectedWorkspace) { setRepoSlugs([]); return; }
+    if (!selectedWorkspace) return;
     fetch(`/api/repos?workspace=${selectedWorkspace}`)
       .then((r) => r.json())
       .then((data) => setRepoSlugs((data.repos ?? []).map((r: { slug: string }) => r.slug)))
@@ -453,10 +454,12 @@ export default function Chatbot({ user }: ChatbotProps) {
     if (!activeSessionId) return;
 
     let currentSessionId = activeSessionId;
+    let persistedSessionId: string | null = currentSessionId.startsWith("local-") ? null : currentSessionId;
     const currentSession = sessions.find((s) => s.id === currentSessionId);
 
     // If this is a local session (not yet in DB), persist it now
     if (currentSessionId.startsWith("local-")) {
+      const localSessionId = currentSessionId;
       try {
         const res = await fetch("/api/chat/sessions", {
           method: "POST",
@@ -473,13 +476,14 @@ export default function Chatbot({ user }: ChatbotProps) {
         // Replace local session with DB session
         setSessions((prev) =>
           prev.map((s) =>
-            s.id === currentSessionId
+            s.id === localSessionId
               ? { ...s, id: dbId, title: content.length > 40 ? content.slice(0, 40) + "…" : content }
               : s
           )
         );
         setActiveSessionId(dbId);
         currentSessionId = dbId;
+        persistedSessionId = dbId;
       } catch {
         // Continue with local ID — messages won't persist but chat still works
       }
@@ -499,7 +503,6 @@ export default function Chatbot({ user }: ChatbotProps) {
     );
 
     setIsLoading(true);
-    setLoadingStatus("AI yanıt hazırlıyor...");
 
     const botMessageId = crypto.randomUUID();
 
@@ -531,7 +534,7 @@ export default function Chatbot({ user }: ChatbotProps) {
           workspaceSlug: isGitHub ? undefined : ws,
           repoSlug: isGitHub ? undefined : repo,
           githubRepo: isGitHub ? repo : undefined,
-          sessionId: currentSessionId,
+          sessionId: persistedSessionId,
           stream: true,
         }),
         signal: controller.signal,
@@ -622,7 +625,6 @@ export default function Chatbot({ user }: ChatbotProps) {
     } finally {
       abortControllerRef.current = null;
       setIsLoading(false);
-      setLoadingStatus("");
     }
   }
 
@@ -821,7 +823,7 @@ export default function Chatbot({ user }: ChatbotProps) {
                   <ChatMessage
                     key={msg.id}
                     message={msg}
-                    repoSlugs={repoSlugs}
+                    repoSlugs={selectedWorkspace ? repoSlugs : []}
                     onRepoClick={handleRepoClick}
                     onRegenerate={handleRegenerate}
                     onEdit={handleEdit}

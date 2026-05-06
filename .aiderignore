@@ -1,0 +1,28 @@
+# Dependencies and generated output
+node_modules/
+.next/
+out/
+build/
+coverage/
+src/generated/
+next-env.d.ts
+*.tsbuildinfo
+
+# Repo QA indexed external repositories
+.repo_cache/
+backup/
+
+# Secrets and local-only config
+.env
+.env.*
+*.pem
+
+# Lock/generated files that aider should not edit casually
+package-lock.json
+prisma/migrations/
+
+# Aider local artifacts
+.aider*
+!.aider.conf.yml
+!.aiderignore
+!AIDER.md

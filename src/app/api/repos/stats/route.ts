@@ -11,7 +11,13 @@ export async function GET(request: NextRequest) {
   if (!workspace || !repo) return NextResponse.json({ error: "Missing params" }, { status: 400 });
 
   const repository = await prisma.repository.findFirst({
-    where: { slug: repo, workspace: { slug: workspace } },
+    where: {
+      slug: repo,
+      workspace: {
+        slug: workspace,
+        users: { some: { userId: session.user.id } },
+      },
+    },
     include: {
       _count: { select: { files: true, commits: true, pullRequests: true, branches: true } },
     },

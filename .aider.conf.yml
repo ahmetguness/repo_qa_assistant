@@ -1,0 +1,16 @@
+# Project defaults for aider.
+# Keep model/API selection outside the repo; set it from your shell or aider flags.
+
+read:
+  - AGENTS.md
+  - AIDER.md
+  - package.json
+  - prisma/schema.prisma
+
+auto-lint: true
+lint-cmd: npm run lint
+test-cmd: npx tsc --noEmit --pretty false
+
+gitignore: true
+dark-mode: true
+show-diffs: true
