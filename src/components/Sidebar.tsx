@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useEffect, useState, useRef } from "react";
 import { ChatSession, ChatFolder } from "@/lib/types";
 
 interface SidebarProps {
@@ -38,9 +38,14 @@ export default function Sidebar({
   const [confirmDelete, setConfirmDelete] = useState<{ id: string; type: "folder" | "session"; name: string; count: number } | null>(null);
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
-  const [now] = useState(() => Date.now());
+  const [now, setNow] = useState(() => Date.now());
   const newFolderRef = useRef<HTMLInputElement>(null);
   const dragSessionId = useRef<string | null>(null);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   function toggleFolder(id: string) {
     setOpenFolders((prev) => {
@@ -138,7 +143,7 @@ export default function Sidebar({
   }
 
   function formatDate(date: Date) {
-    const days = Math.floor((now - date.getTime()) / 86400000);
+    const days = Math.max(0, Math.floor((now - date.getTime()) / 86400000));
     if (days === 0) return "Bugün";
     if (days === 1) return "Dün";
     if (days < 7) return `${days} gün önce`;

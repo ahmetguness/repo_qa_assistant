@@ -1,89 +1,141 @@
 # Repo QA Assistant
 
-An AI-powered code analysis tool that connects to Bitbucket Cloud and public GitHub repositories, indexes your codebase, and lets anyone on your team ask questions in natural language — no technical expertise required.
+Repo QA Assistant is a team-focused AI code analysis app for Bitbucket Cloud and public GitHub repositories. It indexes repository metadata and selected source files into PostgreSQL, then answers questions with repo-aware context, file citations, API maps, dependency traces, and risk signals.
 
-Built for teams. One deployment, everyone signs in with their own Bitbucket account. Public GitHub repos can be analyzed without any login.
+The goal is simple: pick a repository, ask a question, and get a precise technical answer without manually searching the codebase.
 
-## Features
+## Screenshots
 
-**Core**
-- Bitbucket OAuth 2.0 — secure sign-in, each user sees only their own repos
-- Public GitHub repo analysis — paste any GitHub URL, no auth needed
-- Automatic repository indexing — files, commits, PRs, and branches cached in PostgreSQL
-- AI-powered analysis — ask questions in plain language, get detailed technical breakdowns
-- Streaming responses — answers appear word by word, can be stopped mid-stream
-- Smart context — AI receives only relevant files based on your question, not the entire repo
+Add screenshots here after capturing the app.
 
-**Chat**
-- Per-repo conversations — each chat is scoped to one repository
-- Persistent chat history — stored in PostgreSQL, survives page reloads
-- Folders — organize chats with drag-and-drop, rename, delete (with confirmation)
-- Search — filter conversations by title or repo name
-- Edit & resend — modify your last message and get a new response
-- Regenerate — retry any AI response with one click
-- Stop generation — halt streaming responses mid-sentence
-- Copy buttons — copy full messages or individual code blocks
+### Chat Workspace
 
-**Code Analysis**
-- Syntax-highlighted code blocks (GitHub Dark theme)
-- File tree visualization
-- Import/dependency tracing — when you ask about a file, related imports are included
-- Commit history with changed file paths
-- PR analysis with diff stats
-- Branch listing
+![Chat workspace screenshot](docs/screenshots/chat-workspace.png)
 
-**UI/UX**
-- Dark theme optimized for code readability
-- Collapsible sidebar (desktop toggle + mobile overlay)
-- Repo info card (click repo name in header for stats)
-- Clickable repo names in AI responses
-- GitHub icon for GitHub repos, Bitbucket icon for Bitbucket repos in sidebar
-- Custom right-click context menus
-- Mobile responsive
+Recommended capture: main chat view with sidebar, selected repo, streamed answer, and code citations.
 
-**Security**
-- AES-256-GCM token encryption in database
-- Security headers (X-Frame-Options, CSP, XSS protection)
-- Per-user and per-IP rate limiting
-- Input validation and length limits on all endpoints
-- Resource limits (max 500 sessions, 50 folders per user)
-- No caching of API responses with sensitive data
+### Repository Selection
+
+![Repository selector screenshot](docs/screenshots/repository-selector.png)
+
+Recommended capture: workspace/repo dropdown and sync progress banner.
+
+### Public GitHub Analysis
+
+![GitHub analysis screenshot](docs/screenshots/github-analysis.png)
+
+Recommended capture: empty chat screen with GitHub URL input.
+
+### Repo Insight Card
+
+![Repo insight card screenshot](docs/screenshots/repo-info-card.png)
+
+Recommended capture: repo name/header card with file, commit, branch, and PR stats.
+
+## What It Does
+
+- Signs users in with Bitbucket OAuth.
+- Lets each user see only the Bitbucket workspaces and repositories they can access.
+- Accepts public GitHub repository URLs without requiring GitHub login.
+- Indexes repository files, commits, branches, and pull requests into PostgreSQL.
+- Lets users ask natural-language questions about a selected repository.
+- Streams AI answers in the chat UI.
+- Stores chat sessions, messages, and folders in PostgreSQL.
+- Builds targeted AI context instead of sending the entire repository blindly.
+
+## Key Features
+
+### Repository Analysis
+
+- Bitbucket repository sync through the Bitbucket Cloud API.
+- Public GitHub repository sync through the GitHub API and raw file endpoints.
+- File tree extraction.
+- Source file content indexing with size and extension filters.
+- Commit history with changed-file paths.
+- Pull request summaries with diff stats.
+- Branch list indexing.
+
+### AI Context Quality
+
+The chat API builds a focused context package for every question:
+
+- Repo profile and source map.
+- API route map with HTTP methods.
+- Prisma model summary.
+- package.json script and dependency summary.
+- Symbol/export map.
+- Environment variable usage map.
+- Import relationship map.
+- Automatic risk signals.
+- Query-matched evidence snippets with line numbers.
+- Related imports and reverse dependents for selected files.
+- Short-lived context cache for repeated questions.
+
+This helps answers stay grounded in actual files instead of broad guesses.
+
+### Chat
+
+- Per-repo chat sessions.
+- Persistent chat history.
+- Sidebar folders.
+- Search, rename, delete, and move chat sessions.
+- Edit and resend user messages.
+- Regenerate assistant responses.
+- Stop streaming mid-answer.
+- Copy full messages and code blocks.
+
+### Security
+
+- OAuth tokens are encrypted before being stored.
+- Token encryption uses AES-256-GCM with a key derived from `AUTH_SECRET`.
+- API responses use no-store cache headers.
+- Input length limits are enforced.
+- Per-user and per-IP rate limits are applied.
+- Repository access checks are scoped to the authenticated user.
 
 ## Tech Stack
 
 | Layer | Technology |
-|-------|-----------|
-| Framework | Next.js 16 (App Router, Turbopack) |
+| --- | --- |
+| Framework | Next.js 16 App Router |
+| Runtime UI | React 19 |
 | Language | TypeScript |
-| Database | PostgreSQL + Prisma ORM |
-| Auth | NextAuth v5 (Bitbucket OAuth 2.0) |
-| AI | OpenAI GPT-4o-mini (streaming SSE) |
-| Styling | Tailwind CSS |
-| Markdown | react-markdown + rehype-highlight |
-| Encryption | Node.js crypto (AES-256-GCM) |
+| Database | PostgreSQL |
+| ORM | Prisma |
+| Auth | NextAuth v5 beta |
+| OAuth provider | Bitbucket Cloud |
+| AI | OpenAI API |
+| Styling | Tailwind CSS 4 |
+| Markdown | react-markdown, rehype-highlight |
 
 ## How It Works
 
-```
-┌──────────────────┐     ┌──────────────┐     ┌────────────┐
-│  Bitbucket repo   │────▶│  Bitbucket   │────▶│ PostgreSQL │
-│  (user selects)   │     │  REST API    │     │  (cached)  │
-└──────────────────┘     └──────────────┘     └─────┬──────┘
-                                                     │
-┌──────────────────┐     ┌──────────────┐           │
-│  GitHub repo      │────▶│  GitHub API  │───────────┤
-│  (paste URL)      │     │  (public)    │           │
-└──────────────────┘     └──────────────┘           │
-                                                     │
-┌──────────────────┐     ┌──────────────┐           │
-│  User asks        │────▶│  Read from   │◀──────────┘
-│  a question       │     │  DB + OpenAI │
-└──────────────────┘     └──────────────┘
+```text
+Bitbucket OAuth user
+        |
+        v
+Workspace/repo discovery
+        |
+        v
+Repo selected in chat
+        |
+        v
+Bitbucket or GitHub API sync
+        |
+        v
+PostgreSQL cache
+        |
+        v
+Question-specific context builder
+        |
+        v
+OpenAI streaming answer
+        |
+        v
+Persisted chat history
 ```
 
-- Repo data is fetched once and cached locally
-- Chat requests never call Bitbucket/GitHub directly — only the local database
-- AI context is built dynamically based on the question type
+Important detail: repositories are not cloned with `git clone`. The app reads repository data through Bitbucket/GitHub APIs and stores selected indexable content in PostgreSQL.
 
 ## Getting Started
 
@@ -91,18 +143,18 @@ Built for teams. One deployment, everyone signs in with their own Bitbucket acco
 
 - Node.js 20+
 - PostgreSQL 14+
-- A Bitbucket Cloud workspace (for Bitbucket repos)
-- An OpenAI API key
+- OpenAI API key
+- Bitbucket Cloud workspace, if using private Bitbucket repositories
 
-### 1. Install
+### Install
 
 ```bash
 git clone <repo-url>
-cd repo-qa-assistant
+cd repo_qa_assistant
 npm install
 ```
 
-### 2. Configure
+### Configure Environment
 
 ```bash
 cp .env.example .env
@@ -111,246 +163,246 @@ cp .env.example .env
 Edit `.env`:
 
 ```env
-# Database
 DATABASE_URL="postgresql://postgres:password@localhost:5432/qa_assistant?schema=public"
 
-# Auth secrets (generate: openssl rand -base64 32)
-NEXTAUTH_SECRET="your-random-secret"
-AUTH_SECRET="your-random-secret"
+NEXTAUTH_URL="http://localhost:3000"
+NEXTAUTH_SECRET="generate-with-openssl-rand-base64-32"
+AUTH_SECRET="same-as-nextauth-secret"
 
-# Bitbucket OAuth Consumer (see below)
-AUTH_BITBUCKET_ID="your-consumer-key"
-AUTH_BITBUCKET_SECRET="your-consumer-secret"
+AUTH_BITBUCKET_ID="your-bitbucket-oauth-key"
+AUTH_BITBUCKET_SECRET="your-bitbucket-oauth-secret"
 
-# OpenAI
 OPENAI_API_KEY="sk-..."
+OPENAI_MODEL="gpt-4.1"
+OPENAI_FILE_SELECTOR_MODEL="gpt-4.1-mini"
+AI_CONTEXT_CHARS="90000"
 
-# GitHub (optional — increases rate limit from 60 to 5000 req/hour)
 GITHUB_TOKEN=""
 ```
 
-### 3. Create Bitbucket OAuth Consumer
+`GITHUB_TOKEN` is optional, but recommended for higher GitHub API rate limits.
 
-> The OAuth Consumer is the *application's* identity, not a user's. Create it once, all users sign in through it with their own accounts.
+### Create a Bitbucket OAuth Consumer
 
-1. Go to any Bitbucket workspace → **Settings** → **OAuth consumers** → **Add consumer**
-2. Fill in:
-   - **Name**: Repo QA Assistant
-   - **Callback URL**: `http://localhost:3000/api/auth/callback/bitbucket`
-   - **Permissions**: Account (Read), Repositories (Read), Pull Requests (Read)
-3. Save → copy the **Key** and **Secret** into `.env`
+Create one OAuth consumer for the deployment:
 
-The Consumer can be created in any workspace. Users from *any* workspace can sign in — they see repos based on their own Bitbucket permissions.
+1. Open Bitbucket Cloud.
+2. Go to workspace settings.
+3. Open OAuth consumers.
+4. Add a consumer.
+5. Use this callback URL locally:
 
-### 4. Set Up Database
+```text
+http://localhost:3000/api/auth/callback/bitbucket
+```
+
+Required permissions:
+
+- Account: Read
+- Repositories: Read
+- Pull requests: Read
+
+Copy the generated key and secret into `AUTH_BITBUCKET_ID` and `AUTH_BITBUCKET_SECRET`.
+
+### Set Up the Database
 
 ```bash
 createdb qa_assistant
-npx prisma migrate dev --name init
+npx prisma migrate dev
 ```
 
-### 5. Run
+### Run Locally
 
 ```bash
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+Open:
+
+```text
+http://localhost:3000
+```
 
 ## Usage
 
-### Bitbucket Repos
-1. Sign in with your Bitbucket account
-2. Select a repo from the dropdown (top-right)
-3. Ask questions
+### Bitbucket Repositories
 
-### Public GitHub Repos
-1. On the home screen, paste a GitHub URL in the "Public GitHub reposu analiz et" input
-2. Click "Analiz Et" — the repo is indexed automatically
-3. A new chat opens, scoped to that repo
+1. Sign in with Bitbucket.
+2. Select a workspace and repository.
+3. Wait for the sync progress to finish.
+4. Ask questions about architecture, APIs, auth, database models, files, commits, PRs, or risks.
+
+### Public GitHub Repositories
+
+1. Start from an empty chat.
+2. Paste a public GitHub URL.
+3. Click analyze.
+4. Ask questions after indexing completes.
 
 ### Example Questions
 
-| Question | What you get |
-|----------|-------------|
-| "What does this project do?" | Project overview from README + code |
-| "Show the file structure" | Visual tree of all files |
-| "Explain the database schema" | Prisma schema / migration breakdown |
-| "Summarize recent commits" | Commit history with changed files |
-| "List open PRs" | PR overview with branch info |
-| "Explain auth.ts" | File analysis with import tracing |
-| "What technologies are used?" | Stack analysis from package.json |
-| "Give me a detailed report" | Full 9-section technical analysis |
+| Question | Expected answer |
+| --- | --- |
+| What does this project do? | Repo summary grounded in README, package files, and source map |
+| Explain the auth flow | Auth files, token handling, session flow, and risks |
+| List API endpoints | Route map with HTTP methods and source files |
+| Explain the database schema | Prisma models and relationships |
+| Where is this function used? | File source plus import/dependent context |
+| Summarize recent commits | Commit list and changed files |
+| What are the production risks? | Security, reliability, and config risks with sources |
+| Give me an onboarding report | Structured architecture and development overview |
 
-## Team Deployment (10+ users)
+## Repository Indexing Rules
 
-One deployment serves everyone. No per-user setup required.
+The app indexes useful source and config files, and skips noisy or expensive files.
 
-### What you need
+Usually indexed:
 
-- 1 VPS (Ubuntu 22.04+, 4GB RAM)
-- PostgreSQL (on the same VPS or managed)
-- 1 Bitbucket OAuth Consumer (created once by an admin)
-- 1 OpenAI API key (shared, billed to company)
-- Domain + SSL (Nginx + Let's Encrypt)
+- TypeScript, JavaScript, Python, Go, Java, Rust, C#, PHP, Ruby
+- React components
+- JSON, YAML, TOML, XML
+- Markdown and documentation
+- Prisma schemas
+- SQL
+- Docker and environment examples
 
-### How it works for users
+Usually skipped:
 
-1. Admin deploys the app and configures `.env` on the server
-2. Each team member goes to `https://repoqa.company.com`
-3. Clicks "Sign in with Bitbucket"
-4. Sees only the repos they have access to
-5. No setup required from users — just sign in and ask
-
-### Cost estimate
-
-| Item | Cost |
-|------|------|
-| VPS (4GB) | ~$10-20/month |
-| OpenAI (gpt-4o-mini, 10 users) | ~$5-20/month |
-| PostgreSQL | Free (local on VPS) |
-| SSL | Free (Let's Encrypt) |
-
-### Production deployment
-
-```bash
-npm run build
-npx prisma migrate deploy
-npm start  # or: pm2 start npm --name repoqa -- start
-```
-
-Update `.env`:
-```env
-NEXTAUTH_URL="https://repoqa.company.com"
-```
-
-Nginx config:
-```nginx
-server {
-    server_name repoqa.company.com;
-    location / {
-        proxy_pass http://localhost:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_cache_bypass $http_upgrade;
-    }
-}
-```
-
-## Project Structure
-
-```
-src/
-├── app/
-│   ├── api/
-│   │   ├── auth/[...nextauth]/   # OAuth endpoints
-│   │   ├── chat/                 # AI chat (streaming SSE)
-│   │   │   ├── sessions/         # CRUD for chat sessions
-│   │   │   └── folders/          # CRUD for chat folders
-│   │   ├── github/analyze/       # Public GitHub repo indexing
-│   │   ├── repos/                # Repo list, sync, stats
-│   │   └── workspaces/           # Workspace discovery
-│   ├── login/                    # Login page
-│   └── page.tsx                  # Main app (auth-gated)
-├── components/
-│   ├── Chatbot.tsx               # Core orchestrator
-│   ├── ChatInput.tsx             # Input with stop button
-│   ├── ChatMessage.tsx           # Markdown, copy, regenerate, edit
-│   ├── GitHubInput.tsx           # GitHub URL input
-│   ├── RepoSelector.tsx          # Workspace/repo picker
-│   ├── RepoInfoCard.tsx          # Repo stats popup
-│   └── Sidebar.tsx               # History, folders, search, drag-drop
-├── middleware.ts                  # Security headers
-└── lib/
-    ├── auth.ts                   # NextAuth config
-    ├── auth-adapter.ts           # Custom Prisma adapter (with encryption)
-    ├── bitbucket.ts              # Bitbucket API client
-    ├── encryption.ts             # AES-256-GCM token encryption
-    ├── get-access-token.ts       # Token management + auto-refresh
-    ├── github.ts                 # GitHub public API client
-    ├── github-indexer.ts         # GitHub repo indexing service
-    ├── indexer.ts                # Bitbucket repo indexing service
-    ├── prisma.ts                 # Prisma singleton
-    ├── rate-limit.ts             # In-memory rate limiter
-    └── types.ts                  # Shared types
-```
-
-## Database Schema
-
-| Table | Purpose |
-|-------|---------|
-| `users` | Authenticated Bitbucket users |
-| `accounts` | Encrypted OAuth tokens (access + refresh) |
-| `sessions` | Active login sessions |
-| `workspaces` | Bitbucket workspaces |
-| `repositories` | Indexed repos (Bitbucket + GitHub) |
-| `repo_files` | Cached file contents (max 500KB each) |
-| `repo_commits` | Commit history with changed file paths |
-| `repo_pull_requests` | PRs with diff stats |
-| `repo_branches` | Branch list |
-| `chat_folders` | User-created folders (max 50/user) |
-| `chat_sessions` | Conversations scoped to repo (max 500/user) |
-| `chat_messages` | Individual messages |
-
-## Security
-
-### Token Storage
-- OAuth tokens encrypted with AES-256-GCM before database storage
-- Encryption key derived from `AUTH_SECRET` via SHA-256
-- Backward compatible — reads both encrypted and legacy plaintext tokens
-
-### HTTP Security
-- `X-Content-Type-Options: nosniff`
-- `X-Frame-Options: DENY`
-- `X-XSS-Protection: 1; mode=block`
-- `Referrer-Policy: strict-origin-when-cross-origin`
-- `Permissions-Policy: camera=(), microphone=(), geolocation=()`
-- `Cache-Control: no-store` on all API responses
-
-### Rate Limiting
-| Endpoint | Limit |
-|----------|-------|
-| `/api/chat` | 20 req/min per user |
-| `/api/github/analyze` | 5 req/min per IP |
-| `/api/repos/sync` | 10 req/min per user |
-| Other endpoints | 60 req/min |
-
-### Input Validation
-- Chat messages: max 10,000 characters
-- Session titles: max 200 characters
-- Folder names: max 100 characters
-- GitHub URLs: validated format + max 200 characters
-- Repo/workspace params: max 100 characters
-
-### Resource Limits
-- Max 500 chat sessions per user
-- Max 50 folders per user
-- Max 500KB per indexed file
-- Conversation history trimmed to last 8 messages for AI context
+- `node_modules`
+- `.git`
+- `.next`
+- `dist`
+- `build`
+- cache folders
+- lock files
+- minified files
+- source maps
+- files larger than 500 KB
 
 ## AI Context Strategy
 
-The system analyzes the user's question and selects relevant data:
+The app does not send the entire repository to the model. For each question it:
 
-| User asks about... | Context sent to AI |
-|--------------------|--------------------|
-| Project overview | README + package.json + schema + file tree |
-| Specific file | That file + its imports (up to 5 related files) |
-| Commits | Last 20 commits with changed file paths |
-| PRs | Last 15 PRs with descriptions and diff stats |
-| Branches | Full branch list |
-| API/routes | Route, controller, and service files |
-| General question | README + config + schema + file tree + recent commits |
+1. Loads repository metadata.
+2. Scores files against the user question.
+3. Selects high-value candidate files.
+4. Optionally asks a smaller model to refine file selection.
+5. Hydrates only selected file contents from PostgreSQL.
+6. Adds imports, reverse dependents, API maps, schema summaries, and evidence snippets.
+7. Sends the final context to the configured OpenAI model.
 
-Total context budget: ~50K characters (~12K tokens).
+This design improves speed, lowers token usage, and makes answers more precise.
 
-## Bitbucket API Compatibility
+## Project Structure
 
-Compatible with Bitbucket Cloud's post-CHANGE-2770 API (April 2026):
-- Uses `/user/workspaces` instead of deprecated `/workspaces`
-- Workspace-scoped `/repositories/{workspace}` for repo listing
-- Branch names with `/` resolved to commit hashes via refs API
-- File tree uses trailing slash format required by the src endpoint
+```text
+src/
+  app/
+    api/
+      auth/[...nextauth]/       NextAuth route handlers
+      chat/                     Streaming AI chat and chat CRUD
+      github/analyze/           Public GitHub indexing endpoint
+      repos/                    Repo listing, sync, and stats
+      workspaces/               Bitbucket workspace discovery
+    login/                      Login page
+    page.tsx                    Auth-gated main app
+  components/
+    Chatbot.tsx                 Main client-side orchestrator
+    ChatInput.tsx               Message input and stop button
+    ChatMessage.tsx             Markdown rendering and actions
+    GitHubInput.tsx             Public GitHub URL input
+    RepoInfoCard.tsx            Repo stats popover
+    RepoSelector.tsx            Workspace/repo picker
+    Sidebar.tsx                 Chat history and folders
+  lib/
+    auth.ts                     NextAuth config
+    auth-adapter.ts             Custom Prisma adapter with token encryption
+    bitbucket.ts                Bitbucket API client
+    encryption.ts               AES-256-GCM helpers
+    get-access-token.ts         Token refresh helper
+    github.ts                   GitHub API client
+    github-indexer.ts           GitHub indexing service
+    indexer.ts                  Bitbucket indexing service
+    prisma.ts                   Prisma singleton
+    rate-limit.ts               In-memory rate limiter
+    types.ts                    Shared UI types
+prisma/
+  schema.prisma                 Database schema
+  migrations/                   Prisma migrations
+```
+
+## Database Tables
+
+| Table | Purpose |
+| --- | --- |
+| `users` | Authenticated users |
+| `accounts` | OAuth accounts and encrypted tokens |
+| `sessions` | NextAuth sessions |
+| `workspaces` | Bitbucket workspaces |
+| `user_workspaces` | User to workspace access mapping |
+| `repositories` | Bitbucket and GitHub repository records |
+| `repo_files` | Indexed files and selected contents |
+| `repo_commits` | Commit history |
+| `repo_pull_requests` | Pull request metadata |
+| `repo_branches` | Branch metadata |
+| `chat_folders` | User folders |
+| `chat_sessions` | Chat sessions scoped to repositories |
+| `chat_messages` | Persisted messages |
+
+## Scripts
+
+```bash
+npm run dev      # start local dev server
+npm run build    # production build
+npm start        # start production server
+npm run lint     # run ESLint
+```
+
+Recommended verification before merging changes:
+
+```bash
+npm run lint
+npx tsc --noEmit --pretty false
+npm run build
+```
+
+## Production Deployment
+
+1. Provision PostgreSQL.
+2. Set production environment variables.
+3. Set `NEXTAUTH_URL` to the deployed HTTPS URL.
+4. Update the Bitbucket OAuth callback URL:
+
+```text
+https://your-domain.com/api/auth/callback/bitbucket
+```
+
+5. Apply migrations:
+
+```bash
+npx prisma migrate deploy
+```
+
+6. Build and start:
+
+```bash
+npm run build
+npm start
+```
+
+## Operational Notes
+
+- Current rate limiting is in-memory. For multi-instance production, replace it with Redis or another shared store.
+- Repository sync runs during API requests today. For very large repositories, a background job queue would improve reliability.
+- Public GitHub analysis is intentionally unauthenticated, but should be protected with stricter abuse controls in public deployments.
+- AI quality depends heavily on indexed file coverage and the configured OpenAI model.
+
+## Development With Aider
+
+This repository includes optional Aider guidance:
+
+- `.aider.conf.yml`
+- `.aiderignore`
+- `AIDER.md`
+
+Use Aider for small, scoped patches. Avoid using it for broad rewrites, auth/security changes, or Prisma migrations without careful review.

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 interface Workspace {
   id: string;
@@ -29,6 +29,7 @@ export default function RepoSelector({ selectedWorkspace, selectedRepo, onSelect
   const [loadingWs, setLoadingWs] = useState(false);
   const [loadingRepos, setLoadingRepos] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
+  const didAutoSelectWorkspace = useRef(false);
 
   const loadWorkspaces = useCallback(async () => {
     setLoadingWs(true);
@@ -36,11 +37,8 @@ export default function RepoSelector({ selectedWorkspace, selectedRepo, onSelect
       const res = await fetch("/api/workspaces");
       const data = await res.json();
       setWorkspaces(data.workspaces ?? []);
-      if (data.workspaces?.length === 1 && !selectedWorkspace) {
-        onSelect(data.workspaces[0].slug, null);
-      }
     } catch { /* ignore */ } finally { setLoadingWs(false); }
-  }, [onSelect, selectedWorkspace]);
+  }, []);
 
   const loadRepos = useCallback(async (workspace: string) => {
     setLoadingRepos(true);
@@ -54,6 +52,11 @@ export default function RepoSelector({ selectedWorkspace, selectedRepo, onSelect
   useEffect(() => {
     queueMicrotask(() => void loadWorkspaces());
   }, [loadWorkspaces]);
+  useEffect(() => {
+    if (didAutoSelectWorkspace.current || selectedWorkspace || workspaces.length !== 1) return;
+    didAutoSelectWorkspace.current = true;
+    onSelect(workspaces[0].slug, null);
+  }, [onSelect, selectedWorkspace, workspaces]);
   useEffect(() => {
     if (selectedWorkspace) queueMicrotask(() => void loadRepos(selectedWorkspace));
   }, [loadRepos, selectedWorkspace]);

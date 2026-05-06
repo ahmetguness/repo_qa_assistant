@@ -630,6 +630,7 @@ export default function Chatbot({ user }: ChatbotProps) {
 
   const isGitHubSession = sessionWorkspace === "github";
   const effectiveRepo = isGitHubSession ? sessionRepo : (sessionRepo ?? selectedRepo);
+  const effectiveWorkspace = isGitHubSession ? null : (sessionWorkspace ?? selectedWorkspace);
   const quickQuestions = effectiveRepo
     ? [
         { icon: "📁", text: "Bu repodaki dosya yapısını göster" },
@@ -710,8 +711,8 @@ export default function Chatbot({ user }: ChatbotProps) {
               <h2 className="text-[13px] font-medium text-[var(--text-primary)] truncate">
                 {activeSession?.title ?? "Yeni Sohbet"}
               </h2>
-              {effectiveRepo && !isGitHubSession && selectedWorkspace && (
-                <RepoInfoCard workspace={selectedWorkspace} repo={effectiveRepo} />
+              {effectiveRepo && !isGitHubSession && effectiveWorkspace && (
+                <RepoInfoCard workspace={effectiveWorkspace} repo={effectiveRepo} />
               )}
               {effectiveRepo && isGitHubSession && (
                 <p className="text-[11px] text-[var(--text-tertiary)] truncate flex items-center gap-1">
@@ -721,7 +722,7 @@ export default function Chatbot({ user }: ChatbotProps) {
                   {effectiveRepo}
                 </p>
               )}
-              {effectiveRepo && !isGitHubSession && !selectedWorkspace && (
+              {effectiveRepo && !isGitHubSession && !effectiveWorkspace && (
                 <p className="text-[11px] text-[var(--accent)] truncate">{effectiveRepo}</p>
               )}
             </div>

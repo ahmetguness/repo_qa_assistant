@@ -9,7 +9,24 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const MAX_HISTORY_MESSAGES = 8;
 const CHAT_MODEL = process.env.OPENAI_MODEL ?? "gpt-4.1";
 const FILE_SELECTOR_MODEL = process.env.OPENAI_FILE_SELECTOR_MODEL ?? "gpt-4.1-mini";
-const MAX_CONTEXT_CHARS = Number(process.env.AI_CONTEXT_CHARS ?? 90000);
+const parsedMaxOutputTokens = Number(process.env.OPENAI_MAX_OUTPUT_TOKENS ?? 3000);
+const CHAT_MAX_OUTPUT_TOKENS = Number.isFinite(parsedMaxOutputTokens)
+  ? Math.min(Math.max(parsedMaxOutputTokens, 1000), 6000)
+  : 3000;
+const parsedTpmBudget = Number(process.env.OPENAI_TPM_BUDGET ?? 28000);
+const OPENAI_TPM_BUDGET = Number.isFinite(parsedTpmBudget)
+  ? Math.min(Math.max(parsedTpmBudget, 8000), 200000)
+  : 28000;
+const parsedContextChars = Number(process.env.AI_CONTEXT_CHARS ?? 90000);
+const MAX_CONTEXT_CHARS = Number.isFinite(parsedContextChars)
+  ? Math.min(Math.max(parsedContextChars, 20000), 180000)
+  : 90000;
+const FILE_SELECTOR_MAX_FILES = 300;
+const CONTEXT_CACHE_TTL_MS = 5 * 60 * 1000;
+const CONTEXT_CACHE_MAX = 80;
+const MAX_EVIDENCE_CHARS = 18000;
+
+const contextCache = new Map<string, { value: string; expiresAt: number }>();
 
 export async function POST(request: NextRequest) {
   const session = await auth();
@@ -105,11 +122,6 @@ export async function POST(request: NextRequest) {
       repoContext = await buildRepoContext(effectiveWs, effectiveRepo, session.user.id, userQuery);
     }
 
-    const repoLabel = githubRepo ?? (effectiveWs && effectiveRepo ? `${effectiveWs}/${effectiveRepo}` : undefined);
-    const systemPrompt = buildSystemPrompt(
-      buildWorkspaceContext(userWorkspaces), repoContext, effectiveWs, effectiveRepo, repoLabel
-    ) + fuzzyHint;
-
     // Trim conversation history to save tokens
     const trimmedMessages = messages
       .filter((m: { role: string }) => m.role === "user" || m.role === "assistant")
@@ -118,6 +130,22 @@ export async function POST(request: NextRequest) {
         role: m.role as "user" | "assistant",
         content: m.content,
       }));
+
+    const repoLabel = githubRepo ?? (effectiveWs && effectiveRepo ? `${effectiveWs}/${effectiveRepo}` : undefined);
+    const workspaceContext = buildWorkspaceContext(userWorkspaces);
+    repoContext = fitRepoContextToTokenBudget({
+      repoContext,
+      workspaceContext,
+      userQuery,
+      effectiveWs,
+      effectiveRepo,
+      repoLabel,
+      fuzzyHint,
+      history: trimmedMessages,
+    });
+    const systemPrompt = buildSystemPrompt(
+      workspaceContext, repoContext, userQuery, effectiveWs, effectiveRepo, repoLabel
+    ) + fuzzyHint;
 
     const openaiMessages = [
       { role: "system" as const, content: systemPrompt },
@@ -129,7 +157,7 @@ export async function POST(request: NextRequest) {
       const stream = await openai.chat.completions.create({
         model: CHAT_MODEL,
         messages: openaiMessages,
-        max_tokens: 6000,
+        max_tokens: CHAT_MAX_OUTPUT_TOKENS,
         temperature: 0.1,
         stream: true,
       });
@@ -176,7 +204,7 @@ export async function POST(request: NextRequest) {
     const completion = await openai.chat.completions.create({
       model: CHAT_MODEL,
       messages: openaiMessages,
-      max_tokens: 6000,
+      max_tokens: CHAT_MAX_OUTPUT_TOKENS,
       temperature: 0.1,
     });
 
@@ -234,6 +262,49 @@ interface RepoMatch {
   repo: string;
   name: string;
   confidence: "exact" | "fuzzy";
+}
+
+function buildContextCacheKey(repoId: string, lastSyncedAt: Date | null | undefined, userQuery: string): string {
+  return [
+    repoId,
+    lastSyncedAt?.getTime() ?? 0,
+    normalizeQuery(userQuery).slice(0, 160),
+  ].join(":");
+}
+
+function getContextCache(key: string): string | null {
+  const item = contextCache.get(key);
+  if (!item) return null;
+  if (Date.now() > item.expiresAt) {
+    contextCache.delete(key);
+    return null;
+  }
+  return item.value;
+}
+
+function setContextCache(key: string, value: string) {
+  if (contextCache.size >= CONTEXT_CACHE_MAX) {
+    const oldestKey = contextCache.keys().next().value;
+    if (oldestKey) contextCache.delete(oldestKey);
+  }
+  contextCache.set(key, { value, expiresAt: Date.now() + CONTEXT_CACHE_TTL_MS });
+}
+
+function normalizeQuery(query: string): string {
+  return query.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function classifyQuestionIntent(query: string): string {
+  const q = normalizeQuery(query);
+  if (/listele|göster|hangi repo|repolar|workspace/.test(q)) return "listeleme / seçim";
+  if (/nasıl|akış|flow|çalışıyor|ne yapıyor|mantık/.test(q)) return "işleyiş ve veri akışı";
+  if (/hata|bug|sorun|neden|niye|çalışmıyor|fix|düzelt/.test(q)) return "hata teşhisi";
+  if (/güvenlik|security|yetki|auth|token|secret|risk/.test(q)) return "güvenlik incelemesi";
+  if (/performans|hız|yavaş|optimizasyon|cache/.test(q)) return "performans incelemesi";
+  if (/api|endpoint|route/.test(q)) return "API yüzeyi";
+  if (/db|database|prisma|schema|model|tablo/.test(q)) return "veri modeli";
+  if (/detay|rapor|analiz|mimari|overview|özet/.test(q)) return "genel repo analizi";
+  return "hedefli teknik soru";
 }
 
 function detectRepoFromMessage(msg: string, workspaces: WorkspaceWithRepos[]): RepoMatch | null {
@@ -305,7 +376,7 @@ function buildWorkspaceContext(workspaces: WorkspaceWithRepos[]): string {
   return p.join("\n");
 }
 
-function buildSystemPrompt(wCtx: string, rCtx: string, ws?: string, repo?: string, repoLabel?: string): string {
+function buildSystemPrompt(wCtx: string, rCtx: string, userQuery: string, ws?: string, repo?: string, repoLabel?: string): string {
   const base = `Sen bir şirket içi kıdemli yazılım mühendisi ve kod analiz uzmanısın. Bitbucket repolarını derinlemesine analiz edip, teknik ve teknik olmayan kişilerin anlayabileceği şekilde açıklıyorsun.
 
 Kurallar:
@@ -329,12 +400,71 @@ Ek kalite kuralları:
 - "Listele", "göster", "hangi repolar" gibi repo seçimi sorularında analiz yapma; erişilebilir repo listesini net biçimde ver.
 - Uydurma isim, endpoint, tablo, env var veya bağımlılık yazma.`;
 
-  let ctx = base + qualityRules + "\n\n";
+  const answerContract = `
+
+Nokta atışı cevap sözleşmesi:
+- Soru niyeti: ${classifyQuestionIntent(userQuery)}.
+- Önce doğrudan cevabı 2-5 cümlede ver.
+- Sonra en fazla 3-6 maddeyle kanıtlı teknik açıklama yap.
+- Her maddede mümkünse \`[dosya/yolu]\` kaynak göster.
+- "Kanıt Parçaları" bölümündeki line numaralı parçalar varsa onları birincil kaynak kabul et.
+- Bağlamda cevap yoksa tahmin yürütme; hangi dosyanın eksik olabileceğini söyle.
+- Kullanıcı özellikle detaylı rapor istemediyse tüm repo raporu yazma.`;
+
+  let ctx = base + qualityRules + answerContract + "\n\n";
   if (wCtx) ctx += wCtx + "\n\n";
   if (rCtx) ctx += `"${repoLabel ?? `${ws}/${repo}`}" reposu analiz edilmiş:\n\n${rCtx}`;
   else if (ws && repo) ctx += `"${ws}/${repo}" henüz indekslenmemiş.`;
   else ctx += "Repo seçili değil.";
   return ctx;
+}
+
+type ChatHistoryMessage = { role: "user" | "assistant"; content: string };
+
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+function estimateMessagesTokens(messages: ChatHistoryMessage[]): number {
+  return messages.reduce((total, message) => total + estimateTokens(message.content) + 8, 0);
+}
+
+function fitRepoContextToTokenBudget({
+  repoContext,
+  workspaceContext,
+  userQuery,
+  effectiveWs,
+  effectiveRepo,
+  repoLabel,
+  fuzzyHint,
+  history,
+}: {
+  repoContext: string;
+  workspaceContext: string;
+  userQuery: string;
+  effectiveWs?: string;
+  effectiveRepo?: string;
+  repoLabel?: string;
+  fuzzyHint: string;
+  history: ChatHistoryMessage[];
+}): string {
+  if (!repoContext) return repoContext;
+
+  const historyTokens = estimateMessagesTokens(history);
+  const reserveTokens = CHAT_MAX_OUTPUT_TOKENS + historyTokens + 700;
+  const maxPromptTokens = Math.max(4000, OPENAI_TPM_BUDGET - reserveTokens);
+
+  let current = repoContext;
+  for (let i = 0; i < 6; i++) {
+    const prompt = buildSystemPrompt(workspaceContext, current, userQuery, effectiveWs, effectiveRepo, repoLabel) + fuzzyHint;
+    if (estimateTokens(prompt) <= maxPromptTokens) return current;
+
+    const nextLength = Math.floor(current.length * 0.82);
+    if (nextLength >= current.length || nextLength < 4000) break;
+    current = current.slice(0, nextLength);
+  }
+
+  return current.slice(0, Math.max(4000, maxPromptTokens * 4)) + "\n\n...(OpenAI TPM butcesine sigmasi icin repo baglami kisaltildi)";
 }
 
 // ─── Smart repo context builder ─────────────────────
@@ -349,7 +479,7 @@ async function buildRepoContext(wsSlug: string, repoSlug: string, userId: string
       },
     },
     include: {
-      files: { select: { path: true, language: true, size: true, content: true }, orderBy: { path: "asc" } },
+      files: { select: { path: true, language: true, size: true }, orderBy: { path: "asc" } },
       commits: { select: { hash: true, message: true, authorName: true, date: true, filesChanged: true }, orderBy: { date: "desc" }, take: 20 },
       pullRequests: { select: { prNumber: true, title: true, description: true, state: true, authorName: true, sourceBranch: true, targetBranch: true, filesChanged: true }, orderBy: { updatedDate: "desc" }, take: 15 },
       branches: { select: { name: true }, orderBy: { name: "asc" } },
@@ -357,9 +487,16 @@ async function buildRepoContext(wsSlug: string, repoSlug: string, userId: string
   });
   if (!repo) return "";
 
+  const cacheKey = buildContextCacheKey(repo.id, repo.lastSyncedAt, userQuery);
+  const cached = getContextCache(cacheKey);
+  if (cached) return cached;
+
   // Two-phase: ask AI which files are relevant, then send only those
   const selectedFiles = await selectRelevantFiles(repo, userQuery);
-  return buildRepoContextFromData(repo, userQuery, selectedFiles);
+  const hydratedRepo = await hydrateRepoContent(repo, selectedFiles, userQuery);
+  const context = buildRepoContextFromData(hydratedRepo, userQuery, selectedFiles);
+  setContextCache(cacheKey, context);
+  return context;
 }
 
 // Phase 1: Ask AI to select relevant files based on the question
@@ -378,7 +515,9 @@ async function selectRelevantFiles(
     return heuristicSelected.size > 0 ? heuristicSelected : null;
   }
 
-  const fileList = repo.files
+  const selectorCandidates = rankFilesForQuery(repo.files, userQuery, heuristicSelected)
+    .slice(0, FILE_SELECTOR_MAX_FILES);
+  const fileList = selectorCandidates
     .map((f: { path: string; language: string | null; size: number | null }) =>
       `${f.path} (${f.language ?? "?"}${f.size ? `, ${Math.round(f.size / 1024)}KB` : ""})`
     )
@@ -471,17 +610,55 @@ function selectHeuristicFiles(
     .split(/\s+/)
     .filter((word) => word.length > 3);
   const scored = files
-    .map((file) => {
-      const haystack = file.path.toLowerCase();
-      const score = queryWords.reduce((sum, word) => sum + (haystack.includes(word) ? word.length : 0), 0);
-      return { file, score };
-    })
+    .map((file) => ({ file, score: scoreFileForQuery(file, queryWords, selected) }))
     .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score)
-    .slice(0, 12);
+    .slice(0, 24);
   for (const item of scored) selected.add(item.file.path);
 
   return selected;
+}
+
+function rankFilesForQuery(
+  files: { path: string; language: string | null; size: number | null; content?: string | null }[],
+  userQuery: string,
+  preferred: Set<string>
+): typeof files {
+  const queryWords = normalizeQuery(userQuery)
+    .replace(/[^a-z0-9çğıöşü_-]+/gi, " ")
+    .split(/\s+/)
+    .filter((word) => word.length > 2);
+
+  return [...files].sort((a, b) =>
+    scoreFileForQuery(b, queryWords, preferred) - scoreFileForQuery(a, queryWords, preferred)
+  );
+}
+
+function scoreFileForQuery(
+  file: { path: string; language: string | null; size: number | null; content?: string | null },
+  queryWords: string[],
+  preferred: Set<string>
+): number {
+  const path = file.path.toLowerCase();
+  const name = path.split("/").pop() ?? path;
+  const content = file.content?.toLowerCase() ?? "";
+  let score = preferred.has(file.path) ? 80 : 0;
+
+  if (["readme.md", "package.json", "schema.prisma", ".env.example"].includes(name)) score += 35;
+  if (/\/api\/|route\.|controller|handler/.test(path)) score += 18;
+  if (/auth|login|session|token|adapter|middleware/.test(path)) score += 18;
+  if (/prisma|schema|migration|database|db/.test(path)) score += 14;
+  if (/component|page|layout|globals\.css/.test(path)) score += 8;
+  if (/test|spec|__tests__/.test(path)) score += 6;
+
+  for (const word of queryWords) {
+    if (path.includes(word)) score += Math.min(word.length * 5, 30);
+    if (name.includes(word)) score += Math.min(word.length * 6, 36);
+    if (content.includes(word)) score += Math.min(word.length * 2, 18);
+  }
+
+  if (file.size && file.size > 150_000) score -= 12;
+  return score;
 }
 
 function buildRepoProfile(
@@ -667,6 +844,140 @@ function buildRiskSignalSummary(files: ProfileFile[]): string {
   return lines.length ? ["## Otomatik Risk Sinyalleri", ...lines].join("\n") : "";
 }
 
+async function hydrateRepoContent(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  repo: any,
+  selectedFiles: Set<string> | null,
+  userQuery: string
+) {
+  const contentPaths = chooseContentPaths(repo.files, selectedFiles, userQuery);
+  if (!contentPaths.size) {
+    return {
+      ...repo,
+      files: repo.files.map((file: ProfileFile) => ({ ...file, content: null })),
+    };
+  }
+
+  const contentRows = await prisma.repoFile.findMany({
+    where: { repositoryId: repo.id, path: { in: [...contentPaths] } },
+    select: { path: true, content: true },
+  });
+  const contentByPath = new Map(contentRows.map((row) => [row.path, row.content]));
+  return {
+    ...repo,
+    files: repo.files.map((file: ProfileFile) => ({
+      ...file,
+      content: contentByPath.get(file.path) ?? null,
+    })),
+  };
+}
+
+function chooseContentPaths(
+  files: ProfileFile[],
+  selectedFiles: Set<string> | null,
+  userQuery: string
+): Set<string> {
+  const paths = new Set<string>();
+  const add = (path?: string | null) => { if (path) paths.add(path); };
+  const addMatching = (pattern: RegExp, limit: number) => {
+    for (const file of files) {
+      if (paths.size >= 120) break;
+      if (pattern.test(file.path)) {
+        add(file.path);
+        if (--limit <= 0) break;
+      }
+    }
+  };
+
+  for (const file of files) {
+    const name = file.path.split("/").pop()?.toLowerCase() ?? "";
+    if (["readme.md", "package.json", "schema.prisma", ".env.example"].includes(name)) add(file.path);
+  }
+  selectedFiles?.forEach(add);
+
+  const q = normalizeQuery(userQuery);
+  if (/auth|login|oauth|token|session|yetki|giriş|kimlik/.test(q)) addMatching(/auth|login|session|token|adapter|middleware/i, 28);
+  if (/api|endpoint|route|controller|istek|request/.test(q)) addMatching(/\/api\/|route\.|controller|handler/i, 35);
+  if (/db|database|prisma|schema|model|migration|tablo|veri/.test(q)) addMatching(/prisma|schema|migration|database|db/i, 24);
+  if (/ui|component|frontend|sayfa|ekran|react|tasarım/.test(q)) addMatching(/component|app\/.*page|layout|globals\.css/i, 24);
+
+  for (const file of rankFilesForQuery(files, userQuery, selectedFiles ?? new Set()).slice(0, 50)) {
+    add(file.path);
+  }
+
+  return paths;
+}
+
+function buildEvidenceSnippets(
+  files: ProfileFile[],
+  userQuery: string,
+  selectedFiles: Set<string> | null
+): string {
+  const terms = extractQueryTerms(userQuery);
+  if (!terms.length) return "";
+
+  const candidates = rankFilesForQuery(files, userQuery, selectedFiles ?? new Set())
+    .filter((file) => file.content)
+    .slice(0, 24);
+  const snippets: string[] = [];
+  let used = 0;
+
+  for (const file of candidates) {
+    if (!file.content || used >= MAX_EVIDENCE_CHARS) break;
+    const lines = file.content.split(/\r?\n/);
+    const matchedIndexes = lines
+      .map((line, index) => ({ line: line.toLowerCase(), index }))
+      .filter(({ line }) => terms.some((term) => line.includes(term)))
+      .map(({ index }) => index);
+
+    const windows = mergeLineWindows(matchedIndexes, 3).slice(0, 2);
+    for (const [start, end] of windows) {
+      const body = lines
+        .slice(start, end + 1)
+        .map((line, offset) => `${String(start + offset + 1).padStart(4, " ")} | ${line}`)
+        .join("\n");
+      if (!body.trim()) continue;
+      const snippet = `### ${file.path}:${start + 1}-${end + 1}\n\`\`\`${file.language?.toLowerCase() ?? ""}\n${body}\n\`\`\``;
+      snippets.push(snippet);
+      used += snippet.length;
+      if (used >= MAX_EVIDENCE_CHARS) break;
+    }
+  }
+
+  return snippets.length
+    ? ["## Kanıt Parçaları", "Aşağıdaki parçalar kullanıcı sorusuyla doğrudan eşleşen en güçlü kanıtlardır.", ...snippets].join("\n")
+    : "";
+}
+
+function extractQueryTerms(query: string): string[] {
+  const stopWords = new Set([
+    "nedir", "nasıl", "hangi", "bana", "için", "olan", "repo", "proje",
+    "this", "that", "what", "how", "where", "when", "does", "with",
+  ]);
+  return [...new Set(normalizeQuery(query)
+    .replace(/[^a-z0-9çğıöşü_/-]+/gi, " ")
+    .split(/\s+/)
+    .map((term) => term.trim())
+    .filter((term) => term.length > 2 && !stopWords.has(term))
+  )].slice(0, 14);
+}
+
+function mergeLineWindows(indexes: number[], radius: number): [number, number][] {
+  const sorted = [...new Set(indexes)].sort((a, b) => a - b);
+  const windows: [number, number][] = [];
+  for (const index of sorted) {
+    const start = Math.max(0, index - radius);
+    const end = index + radius;
+    const last = windows[windows.length - 1];
+    if (last && start <= last[1] + 1) {
+      last[1] = Math.max(last[1], end);
+    } else {
+      windows.push([start, end]);
+    }
+  }
+  return windows;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function buildRepoContextFromData(repo: any, userQuery = "", selectedFiles: Set<string> | null = null): string {
   type F = { path: string; language: string | null; size: number | null; content: string | null };
@@ -687,6 +998,7 @@ function buildRepoContextFromData(repo: any, userQuery = "", selectedFiles: Set<
   parts.push(`${repo.description ?? ""} | ${repo.language ?? "?"} | ${repo.defaultBranch} | ${files.length} dosya`);
   parts.push(`Diller: ${Object.entries(langStats).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([l, c]) => `${l}:${c}`).join(", ")}\n`);
   parts.push(buildRepoProfile(files, selectedFiles));
+  parts.push(buildEvidenceSnippets(files, userQuery, selectedFiles));
   parts.push("");
 
   const wantsCommits = /commit|değişik|geçmiş|history|log/i.test(q);
@@ -728,6 +1040,13 @@ function buildRepoContextFromData(repo: any, userQuery = "", selectedFiles: Set<
           used += ic.length;
         }
       }
+      for (const dependent of findReverseImports(f.path, files).slice(0, 5)) {
+        if (dependent.content && used < MAX) {
+          const dc = dependent.content.length > 2500 ? dependent.content.slice(0, 2500) + "\n...(truncated)" : dependent.content;
+          parts.push(`### Dependent: ${dependent.path}\n\`\`\`${dependent.language?.toLowerCase() ?? ""}\n${dc}\n\`\`\`\n`);
+          used += dc.length;
+        }
+      }
     }
   }
 
@@ -759,6 +1078,9 @@ function buildRepoContextFromData(repo: any, userQuery = "", selectedFiles: Set<
           if (imported && !selectedFiles.has(imported.path)) {
             emit(imported, 3000, "related");
           }
+        }
+        for (const dependent of findReverseImports(f.path, files).slice(0, 3)) {
+          if (!selectedFiles.has(dependent.path)) emit(dependent, 2500, "dependent");
         }
       }
     } else {
@@ -811,15 +1133,22 @@ async function buildRepoContextById(fullName: string, userQuery: string): Promis
   const repo = await prisma.repository.findFirst({
     where: { source: "github", fullName },
     include: {
-      files: { select: { path: true, language: true, size: true, content: true }, orderBy: { path: "asc" } },
+      files: { select: { path: true, language: true, size: true }, orderBy: { path: "asc" } },
       commits: { select: { hash: true, message: true, authorName: true, date: true, filesChanged: true }, orderBy: { date: "desc" }, take: 20 },
       pullRequests: { select: { prNumber: true, title: true, description: true, state: true, authorName: true, sourceBranch: true, targetBranch: true, filesChanged: true }, orderBy: { updatedDate: "desc" }, take: 15 },
       branches: { select: { name: true }, orderBy: { name: "asc" } },
     },
   });
   if (!repo) return "";
+  const cacheKey = buildContextCacheKey(repo.id, repo.lastSyncedAt, userQuery);
+  const cached = getContextCache(cacheKey);
+  if (cached) return cached;
+
   const selectedFiles = await selectRelevantFiles(repo, userQuery);
-  return buildRepoContextFromData(repo, userQuery, selectedFiles);
+  const hydratedRepo = await hydrateRepoContent(repo, selectedFiles, userQuery);
+  const context = buildRepoContextFromData(hydratedRepo, userQuery, selectedFiles);
+  setContextCache(cacheKey, context);
+  return context;
 }
 
 // ─── Extract imports from a file to find related files ──
@@ -848,6 +1177,17 @@ function extractImports(content: string, allPaths: string[], currentPath: string
     }
   }
   return imports.slice(0, 5); // Max 5 related files
+}
+
+function findReverseImports<T extends { path: string; content: string | null }>(
+  targetPath: string,
+  files: T[]
+): T[] {
+  const allPaths = files.map((file) => file.path);
+  return files.filter((file) => {
+    if (!file.content || file.path === targetPath) return false;
+    return extractImports(file.content, allPaths, file.path).includes(targetPath);
+  });
 }
 
 function resolveRelativePath(dir: string, rel: string): string {
