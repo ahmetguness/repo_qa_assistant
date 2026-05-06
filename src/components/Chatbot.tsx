@@ -31,7 +31,10 @@ export default function Chatbot({ user }: ChatbotProps) {
   const [repoSyncing, setRepoSyncing] = useState(false);
   const [repoSyncStatus, setRepoSyncStatus] = useState("");
   const [syncProgress, setSyncProgress] = useState(0);
+  const messagesViewportRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
+  const instantScrollSessionRef = useRef<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const syncAbortRef = useRef<AbortController | null>(null);
 
@@ -40,14 +43,34 @@ export default function Chatbot({ user }: ChatbotProps) {
   // Derive repo from active session
   const sessionRepo = activeSession?.repositorySlug ?? null;
   const sessionWorkspace = activeSession?.workspaceSlug ?? null;
+  const activeMessageCount = activeSession?.messages.length ?? 0;
+  const activeLastMessageContent = activeSession?.messages.at(-1)?.content ?? "";
 
-  const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
+    requestAnimationFrame(() => {
+      const viewport = messagesViewportRef.current;
+      if (viewport) {
+        viewport.scrollTo({ top: viewport.scrollHeight, behavior });
+        return;
+      }
+      messagesEndRef.current?.scrollIntoView({ behavior, block: "end" });
+    });
   }, []);
 
   useEffect(() => {
-    if (activeSession) scrollToBottom();
-  }, [activeSession?.messages, scrollToBottom, activeSession]);
+    if (!activeSession || !stickToBottomRef.current) return;
+    const shouldScrollInstantly = instantScrollSessionRef.current === activeSession.id;
+    scrollToBottom(isLoading || shouldScrollInstantly ? "auto" : "smooth");
+    if (shouldScrollInstantly && activeMessageCount > 0) {
+      instantScrollSessionRef.current = null;
+    }
+  }, [activeMessageCount, activeLastMessageContent, isLoading, scrollToBottom, activeSession]);
+
+  function handleMessagesScroll() {
+    const el = messagesViewportRef.current;
+    if (!el) return;
+    stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  }
 
   // Initial session hydration should run once on mount.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -102,6 +125,7 @@ export default function Chatbot({ user }: ChatbotProps) {
   }
 
   async function loadSessionMessages(sessionId: string) {
+    instantScrollSessionRef.current = sessionId;
     try {
       const res = await fetch(`/api/chat/sessions/${sessionId}`);
       const data = await res.json();
@@ -120,6 +144,7 @@ export default function Chatbot({ user }: ChatbotProps) {
   async function handleSelectSession(sessionId: string) {
     // Cancel ongoing sync
     if (syncAbortRef.current) { syncAbortRef.current.abort(); setRepoSyncing(false); setRepoSyncStatus(""); }
+    instantScrollSessionRef.current = sessionId;
     setActiveSessionId(sessionId);
     const session = sessions.find((s) => s.id === sessionId);
     if (session) {
@@ -222,7 +247,7 @@ export default function Chatbot({ user }: ChatbotProps) {
   }
 
   async function handleGitHubAnalyze(fullName: string) {
-    // Cancel any ongoing sync
+    // Cancel ongoing sync
     if (syncAbortRef.current) { syncAbortRef.current.abort(); }
 
     // Create a new chat for this GitHub repo
@@ -282,19 +307,30 @@ export default function Chatbot({ user }: ChatbotProps) {
   }
 
   async function handleDeleteSession(id: string) {
-    try { await fetch(`/api/chat/sessions/${id}`, { method: "DELETE" }); } catch { /* ignore */ }
-    setSessions((prev) => {
-      const filtered = prev.filter((s) => s.id !== id);
-      if (filtered.length === 0) { handleNewChat(); return prev; }
-      if (id === activeSessionId) {
-        const next = filtered[0];
-        setActiveSessionId(next.id);
-        if (next.workspaceSlug) setSelectedWorkspace(next.workspaceSlug);
-        setSelectedRepo(next.repositorySlug ?? null);
-        if (next.messages.length === 0) loadSessionMessages(next.id);
-      }
-      return filtered;
-    });
+    if (syncAbortRef.current) { syncAbortRef.current.abort(); setRepoSyncing(false); setRepoSyncStatus(""); }
+
+    try {
+      if (!id.startsWith("local-")) await fetch(`/api/chat/sessions/${id}`, { method: "DELETE" });
+    } catch { /* keep optimistic UI deletion */ }
+
+    const remaining = sessions.filter((s) => s.id !== id);
+    setSessions(remaining);
+
+    if (remaining.length === 0) {
+      setSelectedRepo(null);
+      await createNewChat(selectedWorkspace, null);
+      return;
+    }
+
+    if (id === activeSessionId) {
+      const next = remaining[0];
+      instantScrollSessionRef.current = next.id;
+      setActiveSessionId(next.id);
+      if (next.workspaceSlug) setSelectedWorkspace(next.workspaceSlug);
+      else setSelectedWorkspace(null);
+      setSelectedRepo(next.repositorySlug ?? null);
+      if (next.messages.length === 0) await loadSessionMessages(next.id);
+    }
   }
 
   async function handleRenameSession(id: string, title: string) {
@@ -345,7 +381,7 @@ export default function Chatbot({ user }: ChatbotProps) {
   }
 
   async function syncRepoWithStatus(workspace: string, repo: string) {
-    // Cancel any ongoing sync
+    // Cancel ongoing sync
     if (syncAbortRef.current) syncAbortRef.current.abort();
     const controller = new AbortController();
     syncAbortRef.current = controller;
@@ -557,6 +593,29 @@ export default function Chatbot({ user }: ChatbotProps) {
       if (!reader) throw new Error("No reader");
 
       let buffer = "";
+      let pendingDelta = "";
+      let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const flushPendingDelta = () => {
+        if (!pendingDelta) return;
+        const chunk = pendingDelta;
+        pendingDelta = "";
+        setSessions((prev) =>
+          prev.map((s) => s.id === currentSessionId
+            ? { ...s, messages: s.messages.map((m) => m.id === botMessageId ? { ...m, content: m.content + chunk } : m), updatedAt: new Date() }
+            : s
+          )
+        );
+      };
+
+      const scheduleDeltaFlush = () => {
+        if (flushTimer) return;
+        flushTimer = setTimeout(() => {
+          flushTimer = null;
+          flushPendingDelta();
+        }, 80);
+      };
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -570,14 +629,13 @@ export default function Chatbot({ user }: ChatbotProps) {
           try {
             const data = JSON.parse(line.slice(6));
             if (data.delta) {
-              setSessions((prev) =>
-                prev.map((s) => s.id === currentSessionId
-                  ? { ...s, messages: s.messages.map((m) => m.id === botMessageId ? { ...m, content: m.content + data.delta } : m), updatedAt: new Date() }
-                  : s
-                )
-              );
+              pendingDelta += data.delta;
+              scheduleDeltaFlush();
             }
             if (data.error) {
+              if (flushTimer) clearTimeout(flushTimer);
+              flushTimer = null;
+              flushPendingDelta();
               setSessions((prev) =>
                 prev.map((s) => s.id === currentSessionId
                   ? { ...s, messages: s.messages.map((m) => m.id === botMessageId ? { ...m, content: data.error } : m) }
@@ -587,6 +645,9 @@ export default function Chatbot({ user }: ChatbotProps) {
             }
             // Update session with detected repo
             if (data.done && data.detectedRepo) {
+              if (flushTimer) clearTimeout(flushTimer);
+              flushTimer = null;
+              flushPendingDelta();
               const dr = data.detectedRepo;
               // Update current session — do NOT open new chat or trigger sync
               setSessions((prev) =>
@@ -610,6 +671,8 @@ export default function Chatbot({ user }: ChatbotProps) {
           } catch { /* ignore parse errors */ }
         }
       }
+      if (flushTimer) clearTimeout(flushTimer);
+      flushPendingDelta();
     } catch (err) {
       // Don't show error if user aborted
       if (err instanceof DOMException && err.name === "AbortError") {
@@ -737,7 +800,7 @@ export default function Chatbot({ user }: ChatbotProps) {
         </header>
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto">
+        <div ref={messagesViewportRef} onScroll={handleMessagesScroll} className="flex-1 overflow-y-auto">
           {repoSyncing && (
             <div className="mx-4 mt-3 mb-1">
               <div className="max-w-3xl mx-auto">

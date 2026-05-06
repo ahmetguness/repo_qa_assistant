@@ -182,9 +182,16 @@ export default function ChatMessage({ message, repoSlugs = [], onRepoClick, onRe
               </>
             ) : (
               <div className="markdown-body text-[14.5px] leading-7 text-[var(--text-primary)]">
-                <ReactMarkdown rehypePlugins={[rehypeHighlight]} components={markdownComponents}>
-                  {message.content}
-                </ReactMarkdown>
+                {isStreaming ? (
+                  <div className="streaming-text whitespace-pre-wrap break-words">
+                    {message.content}
+                    <span className="streaming-caret" aria-hidden="true" />
+                  </div>
+                ) : (
+                  <ReactMarkdown rehypePlugins={[rehypeHighlight]} components={markdownComponents}>
+                    {message.content}
+                  </ReactMarkdown>
+                )}
               </div>
             )}
 

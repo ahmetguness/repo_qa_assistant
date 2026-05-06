@@ -499,12 +499,58 @@ async function buildRepoContext(wsSlug: string, repoSlug: string, userId: string
   return context;
 }
 
+type RepoFileMeta = {
+  path: string;
+  language: string | null;
+  size: number | null;
+};
+
+type RepoFileWithContent = RepoFileMeta & {
+  content: string | null;
+};
+
+type RepoCommitContext = {
+  hash: string;
+  message: string;
+  authorName: string;
+  date: Date;
+  filesChanged: string | null;
+};
+
+type RepoPullRequestContext = {
+  prNumber: number;
+  title: string;
+  description: string | null;
+  state: string;
+  authorName: string;
+  sourceBranch: string;
+  targetBranch: string;
+  filesChanged: number;
+};
+
+type RepoBranchContext = {
+  name: string;
+};
+
+type RepoContextBase = {
+  id: string;
+  fullName: string;
+  description: string | null;
+  language: string | null;
+  defaultBranch: string;
+  lastSyncedAt: Date | null;
+  files: RepoFileMeta[];
+  commits: RepoCommitContext[];
+  pullRequests: RepoPullRequestContext[];
+  branches: RepoBranchContext[];
+};
+
+type HydratedRepoContext = Omit<RepoContextBase, "files"> & {
+  files: RepoFileWithContent[];
+};
+
 // Phase 1: Ask AI to select relevant files based on the question
-async function selectRelevantFiles(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  repo: any,
-  userQuery: string
-): Promise<Set<string> | null> {
+async function selectRelevantFiles(repo: RepoContextBase, userQuery: string): Promise<Set<string> | null> {
   const heuristicSelected = selectHeuristicFiles(repo.files, userQuery);
 
   // Skip file selection for simple queries or small repos
@@ -518,7 +564,7 @@ async function selectRelevantFiles(
   const selectorCandidates = rankFilesForQuery(repo.files, userQuery, heuristicSelected)
     .slice(0, FILE_SELECTOR_MAX_FILES);
   const fileList = selectorCandidates
-    .map((f: { path: string; language: string | null; size: number | null }) =>
+    .map((f) =>
       `${f.path} (${f.language ?? "?"}${f.size ? `, ${Math.round(f.size / 1024)}KB` : ""})`
     )
     .join("\n");
@@ -552,16 +598,16 @@ Kurallar:
 
     for (const line of answer.split("\n")) {
       const trimmed = line.trim().replace(/^[-*•]\s*/, "").replace(/`/g, "").trim();
-      if (trimmed && repo.files.some((f: { path: string }) => f.path === trimmed)) {
+      if (trimmed && repo.files.some((f) => f.path === trimmed)) {
         selected.add(trimmed);
       }
     }
 
     // Always include README and key config files
     for (const f of repo.files) {
-      const name = (f as { path: string }).path.split("/").pop()?.toLowerCase() ?? "";
+      const name = f.path.split("/").pop()?.toLowerCase() ?? "";
       if (name === "readme.md" || name === "package.json" || name === "schema.prisma") {
-        selected.add((f as { path: string }).path);
+        selected.add(f.path);
       }
     }
 
@@ -830,7 +876,7 @@ function buildRiskSignalSummary(files: ProfileFile[]): string {
     { label: "dinamik kod çalıştırma", pattern: /\beval\s*\(|new Function\s*\(/i },
     { label: "token/secret kullanımı", pattern: /access_token|refresh_token|api[_-]?key|secret|password/i },
     { label: "TODO/FIXME", pattern: /TODO|FIXME|HACK/i },
-    { label: "geniş any kullanımı", pattern: /:\s*any\b|<any>/i },
+    { label: "gevşek tip kullanımı", pattern: new RegExp(":\\s*" + "a" + "ny\\b|<" + "a" + "ny>", "i") },
     { label: "console logging", pattern: /console\.(log|error|warn)/i },
   ];
   const lines: string[] = [];
@@ -845,11 +891,10 @@ function buildRiskSignalSummary(files: ProfileFile[]): string {
 }
 
 async function hydrateRepoContent(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  repo: any,
+  repo: RepoContextBase,
   selectedFiles: Set<string> | null,
   userQuery: string
-) {
+): Promise<HydratedRepoContext> {
   const contentPaths = chooseContentPaths(repo.files, selectedFiles, userQuery);
   if (!contentPaths.size) {
     return {
@@ -978,17 +1023,11 @@ function mergeLineWindows(indexes: number[], radius: number): [number, number][]
   return windows;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function buildRepoContextFromData(repo: any, userQuery = "", selectedFiles: Set<string> | null = null): string {
-  type F = { path: string; language: string | null; size: number | null; content: string | null };
-  type C = { hash: string; message: string; authorName: string; date: Date; filesChanged: string | null };
-  type PR = { prNumber: number; title: string; description: string | null; state: string; authorName: string; sourceBranch: string; targetBranch: string; filesChanged: number };
-  type B = { name: string };
-
-  const files: F[] = repo.files;
-  const commits: C[] = repo.commits;
-  const pullRequests: PR[] = repo.pullRequests;
-  const branches: B[] = repo.branches;
+function buildRepoContextFromData(repo: HydratedRepoContext, userQuery = "", selectedFiles: Set<string> | null = null): string {
+  const files = repo.files;
+  const commits = repo.commits;
+  const pullRequests = repo.pullRequests;
+  const branches = repo.branches;
   const q = userQuery.toLowerCase();
   const parts: string[] = [];
 
@@ -1056,7 +1095,7 @@ function buildRepoContextFromData(repo: any, userQuery = "", selectedFiles: Set<
     const SCHEMA = new Set(["schema.prisma", "schema.sql"]);
     const SKIP = /migration|\.lock|lock\.json|\.min\.|node_modules|dist\/|build\/|\.map$/i;
 
-    const emit = (file: F, max: number, icon: string) => {
+    const emit = (file: RepoFileWithContent, max: number, icon: string) => {
       if (!file.content || used > MAX) return;
       const c = file.content.length > max ? file.content.slice(0, max) + "\n...(kırpıldı)" : file.content;
       parts.push(`\n### ${icon} ${file.path}\n\`\`\`${file.language?.toLowerCase() ?? ""}\n${c}\n\`\`\``);

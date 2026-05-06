@@ -106,6 +106,26 @@ body {
   margin: 1em 0;
 }
 
+.streaming-text {
+  min-height: 1.75rem;
+}
+
+.streaming-caret {
+  display: inline-block;
+  width: 0.45em;
+  height: 1.05em;
+  margin-left: 0.12em;
+  transform: translateY(0.16em);
+  border-radius: 999px;
+  background: var(--accent);
+  animation: stream-caret-pulse 1s ease-in-out infinite;
+}
+
+@keyframes stream-caret-pulse {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 0.85; }
+}
+
 /* Syntax highlighting (GitHub Dark theme) */
 .hljs { color: #c9d1d9; }
 .hljs-keyword, .hljs-selector-tag { color: #ff7b72; }
