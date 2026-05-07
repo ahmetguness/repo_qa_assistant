@@ -4,10 +4,6 @@ Repo QA Assistant is a team-focused AI code analysis app for Bitbucket Cloud and
 
 The goal is simple: pick a repository, ask a question, and get a precise technical answer without manually searching the codebase.
 
-## Screenshots
-
-Add screenshots here after capturing the app.
-
 ### Chat Workspace
 
 ![Chat workspace screenshot](docs/screenshots/chat-workspace.png)
