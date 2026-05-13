@@ -4,6 +4,7 @@ import { useState, useCallback } from "react";
 import { Message } from "@/lib/types";
 import ReactMarkdown, { Components } from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
+import { useLanguage } from "./LanguageProvider";
 
 interface ChatMessageProps {
   message: Message;
@@ -16,8 +17,9 @@ interface ChatMessageProps {
   isStreaming?: boolean;
 }
 
-function CopyButton({ text, label = "Kopyala" }: { text: string; label?: string }) {
+function CopyButton({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false);
+  const { t } = useLanguage();
   return (
     <button
       onClick={async () => {
@@ -33,7 +35,7 @@ function CopyButton({ text, label = "Kopyala" }: { text: string; label?: string 
       {copied ? (
         <>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--success)" strokeWidth="2"><path d="M20 6L9 17l-5-5" /></svg>
-          <span className="text-[var(--success)]">Kopyalandı</span>
+          <span className="text-[var(--success)]">{t("copied")}</span>
         </>
       ) : (
         <>
@@ -51,6 +53,7 @@ export default function ChatMessage({ message, repoSlugs = [], onRepoClick, onRe
   const isUser = message.role === "user";
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState(message.content);
+  const { t } = useLanguage();
 
   const markdownComponents: Components = useCallback(() => ({
     strong: ({ children }: { children?: React.ReactNode }) => {
@@ -75,7 +78,6 @@ export default function ChatMessage({ message, repoSlugs = [], onRepoClick, onRe
       return <strong>{children}</strong>;
     },
     pre: ({ children }: { children?: React.ReactNode }) => {
-      // Extract code text for copy button
       let codeText = "";
       const extractText = (node: React.ReactNode): void => {
         if (typeof node === "string") { codeText += node; return; }
@@ -89,19 +91,18 @@ export default function ChatMessage({ message, repoSlugs = [], onRepoClick, onRe
       return (
         <div className="relative group/code">
           <div className="absolute top-2 right-2 opacity-0 group-hover/code:opacity-100 transition-opacity">
-            <CopyButton text={codeText.trim()} label="Kodu kopyala" />
+            <CopyButton text={codeText.trim()} label={t("copyCode")} />
           </div>
           <pre>{children}</pre>
         </div>
       );
     },
-  }), [repoSlugs, onRepoClick])();
+  }), [repoSlugs, onRepoClick, t])();
 
   return (
     <div className={`py-5 group/msg ${isUser ? "" : "bg-[var(--bg-secondary)]/30"}`}>
       <div className="max-w-3xl mx-auto px-4 md:px-8">
         <div className={`flex gap-3.5 ${isUser ? "flex-row-reverse" : "flex-row"}`}>
-          {/* Avatar */}
           <div className={`flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold ${
             isUser ? "bg-[var(--accent)] text-white" : "bg-[var(--accent-soft)] text-[var(--accent)]"
           }`}>
@@ -112,10 +113,9 @@ export default function ChatMessage({ message, repoSlugs = [], onRepoClick, onRe
             )}
           </div>
 
-          {/* Content */}
           <div className={`flex-1 min-w-0 ${isUser ? "text-right" : ""}`}>
             <p className="text-xs font-medium text-[var(--text-tertiary)] mb-1.5">
-              {isUser ? "Sen" : "Repo QA Assistant"}
+              {isUser ? t("you") : t("assistant")}
             </p>
             {isUser ? (
               <>
@@ -142,7 +142,7 @@ export default function ChatMessage({ message, repoSlugs = [], onRepoClick, onRe
                         onClick={() => { setIsEditing(false); setEditContent(message.content); }}
                         className="px-3 py-1 rounded-lg text-[12px] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] transition-colors"
                       >
-                        İptal
+                        {t("cancel")}
                       </button>
                       <button
                         onClick={() => {
@@ -153,7 +153,7 @@ export default function ChatMessage({ message, repoSlugs = [], onRepoClick, onRe
                         disabled={!editContent.trim()}
                         className="px-3 py-1 rounded-lg text-[12px] bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] disabled:opacity-40 transition-colors"
                       >
-                        Gönder
+                        {t("send")}
                       </button>
                     </div>
                   </div>
@@ -168,13 +168,13 @@ export default function ChatMessage({ message, repoSlugs = [], onRepoClick, onRe
                         className="absolute -bottom-6 right-0 flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px]
                           text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]
                           hover:bg-[var(--bg-hover)] transition-colors opacity-0 group-hover/msg:opacity-100"
-                        title="Düzenle ve tekrar gönder"
+                        title={t("edit")}
                       >
                         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                           <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
                           <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
                         </svg>
-                        Düzenle
+                        {t("edit")}
                       </button>
                     )}
                   </div>
@@ -195,22 +195,21 @@ export default function ChatMessage({ message, repoSlugs = [], onRepoClick, onRe
               </div>
             )}
 
-            {/* Action buttons for AI messages */}
             {!isUser && message.content && !isStreaming && (
               <div className="flex items-center gap-1 mt-2 opacity-0 group-hover/msg:opacity-100 transition-opacity">
-                <CopyButton text={message.content} label="Mesajı kopyala" />
+                <CopyButton text={message.content} label={t("copyMessage")} />
                 {isLast && onRegenerate && (
                   <button
                     onClick={() => onRegenerate(message.id)}
                     className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px]
                       text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]
                       hover:bg-[var(--bg-hover)] transition-colors"
-                    title="Yeniden oluştur"
+                    title={t("regenerate")}
                   >
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                       <path d="M1 4v6h6M23 20v-6h-6" /><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" />
                     </svg>
-                    Yeniden oluştur
+                    {t("regenerate")}
                   </button>
                 )}
               </div>

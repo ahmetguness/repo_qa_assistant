@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, FormEvent } from "react";
+import { useLanguage } from "./LanguageProvider";
 
 interface ChatInputProps {
   onSend: (message: string) => void;
@@ -13,6 +14,7 @@ interface ChatInputProps {
 export default function ChatInput({ onSend, onStop, disabled, isStreaming, repoSelected }: ChatInputProps) {
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const { t } = useLanguage();
 
   useEffect(() => {
     if (!disabled && !isStreaming && textareaRef.current) {
@@ -46,7 +48,6 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, repoS
   return (
     <div className="bg-gradient-to-t from-[var(--bg-primary)] via-[var(--bg-primary)] to-transparent pt-2">
       <div className="max-w-3xl mx-auto px-4 md:px-8 pb-4">
-        {/* Stop button */}
         {isStreaming && (
           <div className="flex justify-center mb-2">
             <button
@@ -59,7 +60,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, repoS
               <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
                 <rect x="6" y="6" width="12" height="12" rx="2" />
               </svg>
-              Yanıtı durdur
+              {t("stopAnswer")}
             </button>
           </div>
         )}
@@ -71,11 +72,11 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, repoS
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder={repoSelected ? "Repo hakkında bir soru sorun..." : "Bir mesaj yazın veya repo adı belirtin..."}
+              placeholder={repoSelected ? t("repoQuestionPlaceholder") : t("genericPlaceholder")}
               disabled={disabled || isStreaming}
               rows={1}
               className="flex-1 resize-none bg-transparent px-4 py-3.5 text-[14.5px] text-[var(--text-primary)] outline-none placeholder:text-[var(--text-tertiary)] disabled:opacity-40"
-              aria-label="Mesaj giriş alanı"
+              aria-label={t("messageInputAria")}
             />
             <button
               type="submit"
@@ -84,7 +85,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, repoS
                 bg-[var(--accent)] hover:bg-[var(--accent-hover)]
                 disabled:bg-[var(--bg-tertiary)] disabled:text-[var(--text-tertiary)]
                 text-white transition-all disabled:cursor-not-allowed"
-              aria-label="Mesaj gönder"
+              aria-label={t("sendMessageAria")}
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M12 19V5M5 12l7-7 7 7" />
@@ -93,7 +94,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, repoS
           </div>
         </form>
         <p className="text-center text-[11px] text-[var(--text-tertiary)] mt-2">
-          AI yanıtları hata içerebilir. Kritik kararlar için kodu doğrudan inceleyin.
+          {t("aiDisclaimer")}
         </p>
       </div>
     </div>

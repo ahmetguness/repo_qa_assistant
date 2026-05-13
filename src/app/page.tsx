@@ -1,6 +1,7 @@
 import { auth } from "@/lib/auth";
 import { redirect } from "next/navigation";
 import Chatbot from "@/components/Chatbot";
+import { LanguageProvider } from "@/components/LanguageProvider";
 
 export default async function Home() {
   const session = await auth();
@@ -10,12 +11,14 @@ export default async function Home() {
   }
 
   return (
-    <Chatbot
-      user={{
-        id: session.user.id!,
-        name: session.user.name,
-        image: session.user.image,
-      }}
-    />
+    <LanguageProvider>
+      <Chatbot
+        user={{
+          id: session.user.id!,
+          name: session.user.name,
+          image: session.user.image,
+        }}
+      />
+    </LanguageProvider>
   );
 }

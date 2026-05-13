@@ -8,6 +8,8 @@ import Sidebar from "./Sidebar";
 import RepoSelector from "./RepoSelector";
 import RepoInfoCard from "./RepoInfoCard";
 import GitHubInput from "./GitHubInput";
+import LanguageToggle from "./LanguageToggle";
+import { useLanguage } from "./LanguageProvider";
 
 interface ChatbotProps {
   user: {
@@ -18,6 +20,7 @@ interface ChatbotProps {
 }
 
 export default function Chatbot({ user }: ChatbotProps) {
+  const { t } = useLanguage();
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -168,7 +171,7 @@ export default function Chatbot({ user }: ChatbotProps) {
     const localId = `local-${crypto.randomUUID()}`;
     const newSession: ChatSession = {
       id: localId,
-      title: repo ?? "Yeni Sohbet",
+      title: repo ?? t("newChat"),
       messages: [],
       repositorySlug: repo,
       workspaceSlug: workspace,
@@ -708,6 +711,21 @@ export default function Chatbot({ user }: ChatbotProps) {
         { icon: "🔍", text: "Workspace bilgilerini göster" },
       ];
 
+  void quickQuestions;
+  const localizedQuickQuestions = effectiveRepo
+    ? [
+        { icon: "📁", text: t("showFileStructure") },
+        { icon: "💡", text: t("explainProject") },
+        { icon: "📝", text: t("summarizeCommits") },
+        { icon: "🔀", text: t("listOpenPrs") },
+        { icon: "🌿", text: t("listBranches") },
+        { icon: "⚙️", text: t("explainTech") },
+      ]
+    : [
+        { icon: "📋", text: t("listRepos") },
+        { icon: "🔍", text: t("showWorkspaceInfo") },
+      ];
+
   if (!initialized) {
     return (
       <div className="flex items-center justify-center h-full bg-[var(--bg-primary)]">
@@ -772,7 +790,7 @@ export default function Chatbot({ user }: ChatbotProps) {
             </button>
             <div className="min-w-0">
               <h2 className="text-[13px] font-medium text-[var(--text-primary)] truncate">
-                {activeSession?.title ?? "Yeni Sohbet"}
+                {activeSession?.title ?? t("newChat")}
               </h2>
               {effectiveRepo && !isGitHubSession && effectiveWorkspace && (
                 <RepoInfoCard workspace={effectiveWorkspace} repo={effectiveRepo} />
@@ -790,13 +808,16 @@ export default function Chatbot({ user }: ChatbotProps) {
               )}
             </div>
           </div>
-          {!isGitHubSession && (
-            <RepoSelector
-              selectedWorkspace={selectedWorkspace}
-              selectedRepo={selectedRepo}
-              onSelect={handleRepoSelect}
-            />
-          )}
+          <div className="flex items-center gap-2">
+            <LanguageToggle />
+            {!isGitHubSession && (
+              <RepoSelector
+                selectedWorkspace={selectedWorkspace}
+                selectedRepo={selectedRepo}
+                onSelect={handleRepoSelect}
+              />
+            )}
+          </div>
         </header>
 
         {/* Messages */}
@@ -857,7 +878,7 @@ export default function Chatbot({ user }: ChatbotProps) {
                   : "Sağ üstten bir repo seçin — her repo için ayrı bir sohbet açılır."}
               </p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-w-lg w-full">
-                {quickQuestions.map((q) => (
+                {localizedQuickQuestions.map((q) => (
                   <button key={q.text} onClick={() => handleSend(q.text)}
                     className="flex items-center gap-3 text-left px-4 py-3 rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)]/50 hover:bg-[var(--bg-hover)] hover:border-[var(--border-light)] text-[13px] text-[var(--text-secondary)] transition-all">
                     <span className="text-base">{q.icon}</span>{q.text}
